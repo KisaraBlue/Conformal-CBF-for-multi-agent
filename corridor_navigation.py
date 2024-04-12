@@ -15,7 +15,10 @@ sim_mdl = {'max_t': 500,
            'dt': .05,
            'x_lim': 2,
            'y_start': 3,
-           'y_end': -2}
+           'y_end': -2,
+           'epsilon': .05,
+           'err_rate': .05,
+           'learn_rate': .05}
 
 '''Agent parameters: 
     radius, sensing range,
@@ -28,20 +31,29 @@ agent_mdl = {'r': .15,
     radius'''
 obs_mdl = {'r': .5}
 
-
+#@staticmethod
 def agents_model(z, t, u):
     '''
-    z[i][0], z[i][1]: Position of agent i in stationary coordinates
-    z[i][2], z[i][3]: Velocity of agent i in stationary coordinates
+    z[4*i+0], z[4*i+1]: Position of agent i in stationary coordinates
+    z[4*i+2], z[4*i+3]: Velocity of agent i in stationary coordinates
     u[i][0], u[i][1]: input velocity of agent i
     '''
-    N = len(z)
-    
-    dzdt = [[z[i][2], 
-             z[i][3], 
-             u[i][0], 
-             u[i][1]] 
-             for i in range(N)]
+    N = len(z) // 4
+    max_v = agent_mdl['max_v']
+
+    dzdt = []
+    for i in range(N):
+        vx_i = z[4*i+2]
+        if abs(vx_i) > max_v:
+            vx_i = np.sign(vx_i) * max_v
+        vy_i = z[4*i+3]
+        if abs(vy_i) > max_v:
+            vy_i = np.sign(vy_i) * max_v
+        dzdt.append(vx_i)
+        dzdt.append(vy_i)
+        dzdt.append(u[2*i+0])
+        dzdt.append(u[2*i+1])
+
     return dzdt
 
 def dist2(a1, a2):
@@ -51,34 +63,31 @@ def dist(a1, a2):
     return np.sqrt(dist2(a1, a2))
 
 def lyapunov_f(z, i, d):
-    return dist2(z[i], d[i])
+    return dist2(z[4*i:4*i+2], d[i])
 
 def clf_c(z, i, d, ui, epsilon, delta_i):
-    for i in range(len(z)):
-        vec_pd = [z[i][0] - d[i][0], z[i][1] - d[i][1]]
-        if 2 * np.matmul(vec_pd, ui) + epsilon * lyapunov_f(z, i, d) + delta_i > 0:
-            return False
-    return True
+    vec_xidi = [z[4*i+0] - d[i][0], z[4*i+1] - d[i][1]]
+    return 2 * np.matmul(vec_xidi, ui) + epsilon * lyapunov_f(z, i, d) + delta_i <= 0
 
 def h_agents(z, i, j, agent_mdl):
-    return dist2(z[i], z[j]) - (2 * agent_mdl['r']) ** 2
+    return dist2(z[4*i:4*i+2], z[4*j:4*j+2]) - (2 * agent_mdl['r']) ** 2
 
 def h_obstacle(z, obs, i, l, agent_mdl, obs_mdl):
-    return dist2(z[i], obs[l]) - (agent_mdl['r'] + obs_mdl['r']) ** 2
+    return dist2(z[4*i:4*i+2], obs[l]) - (agent_mdl['r'] + obs_mdl['r']) ** 2
 
 def cbf_agents_ML(z, i, j, ui, zeta_a, eta_a, agent_mdl):
-    vec_ij = [z[i][0] - z[j][0], z[i][1] - z[j][1]]
-    vec_uivj = [ui[0] - z[j][2], ui[1] - z[j][3]]
+    vec_ij = [z[4*i+0] - z[4*j+0], z[4*i+1] - z[4*j+1]]
+    vec_uivj = [ui[0] - z[4*j+2], ui[1] - z[4*j+3]]
     h = h_agents(z, i, j, agent_mdl)
-    return 2 * np.matmul(vec_ij, vec_uivj) + zeta_a[i] * (h ** eta_a[i]) >= 0
+    return 2 * np.matmul(vec_ij, vec_uivj) + zeta_a * (h ** eta_a) >= 0
 
 def cbf_obstacle_ML(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl):
-    vec_il = [z[i][0] - obs[l][0], z[i][1] - obs[l][1]]
+    vec_il = [z[4*i+0] - obs[l][0], z[4*i+1] - obs[l][1]]
     h = h_obstacle(z, obs, i, l, agent_mdl, obs_mdl)
-    return 2 * np.matmul(vec_il, ui) + zeta_o[i] * (h ** eta_o[i]) >= 0
+    return 2 * np.matmul(vec_il, ui) + zeta_o * (h ** eta_o) >= 0
 
-def sensing_range(z, obs):
-    N = len(z)
+def edge_sensing_range(z, obs):
+    N = len(z) // 4
     r_agent = agent_mdl['r']
     r_sense = agent_mdl['sense']
     M = len(obs)
@@ -89,102 +98,77 @@ def sensing_range(z, obs):
     sensed_o = [[] for _ in range(N)]
     for i in range(N):
         for j in range(i+1, N):
-            if dist(z[i], z[j]) < r_sense + r_agent:
+            if dist(z[4*i:4*i+2], z[4*j:4*j+2]) < r_sense + r_agent:
                 sensed_a[i].append(j)
                 sensed_a[j].append(i)
         for l in range(M):
-            if dist(z[i], obs[l]) < r_sense + r_obs:
+            if dist(z[4*i:4*i+2], obs[l]) < r_sense + r_obs:
                 sensed_o[i].append(l)
     
     return sensed_a, sensed_o
 
-def qp_controller(z, obs, agent_mdl, obs_mdl, d, zeta_a, eta_a, zeta_o, eta_o):
+
+def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o):
     '''Inputs:
 	   z: Current agents' state
 	   Output to be computed: 	
 	   u: control velocity
     '''
-    N = len(z)
-    sensed_a, sensed_o = sensing_range(z, obs)
+    N = len(z) // 4
+    sensed_a, sensed_o = edge_sensing_range(z, obs)
 
-    # return None if agent at the goal y_end?
+    r_agent_2 = agent_mdl['r'] ** 2
 
     u = []
     slack = []
     udim = 2
+    epsilon = sim_mdl['epsilon']
     for i in range(N):
-        ui = cp.Variable(udim)
-        di = cp.Variable(1)
-        objective = cp.Minimize(cp.norm2(ui) + di ** 2)
-        constraints = [clf_c(z, i, d, ui, epsilon, di)]
-        for j in sensed_a[i]:
-            constraints.append(cbf_agents_ML(z, i, j, ui, zeta_a, eta_a, agent_mdl))
-        for l in sensed_o[i]:
-            constraints.append(cbf_obstacle_ML(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl))
-        problem = cp.Problem(objective, constraints)
 
-        problem.solve()
-        if problem.status != 'infeasible':
-            slack.append(di.value)
-            u.append(ui.value)
-        else:
+        if dist2(z[4*i:4*i+2], d[i]) < r_agent_2:
+            u.append(None)
             u.append(None)
             slack.append(None)
+        else:
+            ui = cp.Variable(udim)
+            di = cp.Variable(1)
+            objective = cp.Minimize(cp.norm2(ui) + di ** 2)
+            constraints = [clf_c(z, i, d, ui, epsilon, di)]
+            for j in sensed_a[i]:
+                constraints.append(cbf_agents_ML(z, i, j, ui, zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl))
+            for l in sensed_o[i]:
+                constraints.append(cbf_obstacle_ML(z, obs, i, l, ui, zeta_o(1), eta_o(1), agent_mdl, obs_mdl))
+            problem = cp.Problem(objective, constraints)
 
-    return u
+            problem.solve()
+            if problem.status != 'infeasible':
+                slack.append(di.value)
+                u.append(ui.value[0])
+                u.append(ui.value[1])
+            else:
+                u.append(None)
+                u.append(None)
+                slack.append(None)
 
-def u_ref(p, d, obs):
-    sensed_a, sensed_o = sensing_range(z, obs)
+    return u, sensed_a
 
 
 def soft_positive_linear(x):
     return np.log(1 + np.exp(x))
 
-def cbf_agent_cfm(z, i, j, ui, lmbd, predictor, agent_mdl):
-    return predictor(z, i, j, ui) >= - soft_positive_linear(lmbd[i]) * h_agents(z, i, j, agent_mdl)
+def next_lmbd(lmbd, err):
+    eta = sim_mdl['learn_rate']
+    eps = sim_mdl['err_rate']
+    return [lmbd[i] + eta * (eps - err[i]) for i in range(len(lmbd))]
 
-def cbf_obstacle_cfm(z, obs, i, l, ui, agent_mdl, obs_mdl):
-    return
-
-def conformal_controller(z, obs, agent_mdl, obs_mdl, d, u_ref, lmbd, predictor):
-    '''Inputs:
-	   z: Current agents' state
-	   Output to be computed: 	
-	   u: control velocity
-    '''
-    N = len(z)
-    sensed_a, sensed_o = sensing_range(z, obs)
-
-    u = []
-    udim = 2
-    for i in range(N):
-        ui = cp.Variable(udim)
-        objective = cp.Minimize(cp.norm2(ui - u_ref[i]))
-        constraints = [clf_c(z, i, d, ui, epsilon, 0)]
-        for j in sensed_a[i]:
-            constraints.append(cbf_agent_cfm(z, i, j, ui, lmbd, predictor, agent_mdl))
-        for l in sensed_o[i]:
-            constraints.append(cbf_obstacle_cfm(z, obs, i, l, ui, agent_mdl, obs_mdl))
-        problem = cp.Problem(objective, constraints)
-
-        problem.solve()
-        if problem.status != 'infeasible':
-            u.append(ui.value)
-        else:
-            u.append(None)
-
-    return u
-
-
-
-def path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl):
+def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o):
     '''
         z0,u0: initial state, velocity
         t: time sequence for simulation
         cntr: controller to be used
     '''
     nb_steps = len(t)
-    N = len(z0)
+    N = len(z0) // 4 
     r_agent = agent_mdl['r']
 
     '''These vectors will store the state variables of the vehicle'''
@@ -193,12 +177,10 @@ def path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl):
     vx = np.array([])
     vy = np.array([])
     ''' Initialization of x, y, theta, xf, yf'''
-    x = np.append(x, [z0[i][0] for i in range(N)])
-    y = np.append(y, [z0[i][1] for i in range(N)])
-    vx = np.append(x, [z0[i][2] for i in range(N)])
-    vy = np.append(y, [z0[i][3] for i in range(N)])
-
-    controller = qp_controller
+    x = np.append(x, [z0[4*i+0] for i in range(N)])
+    y = np.append(y, [z0[4*i+1] for i in range(N)])
+    vx = np.append(x, [z0[4*i+2] for i in range(N)])
+    vy = np.append(y, [z0[4*i+3] for i in range(N)])
 
     """ setting up the figure """
     plt.figure()
@@ -206,28 +188,43 @@ def path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl):
 
     """This loop solves the ODE for each pair of time points
     with fixed controller input"""
+    last_step = nb_steps - 2
     for s in range(1, nb_steps):
         # The next time interval to compute the solution over
         tspan = [t[s - 1], t[s]]
 
         # next controller input
-        delta = controller(z0, obs, agent_mdl, obs_mdl)
-        if None in delta:
-            print("Can't continue loop")
+        next_u, sensed_a = qp_controller(z0, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o)
+        for ui in next_u:
+            if ui == None:
+                print("Can't continue loop")
+                print("Step: ", s)
+                u0 = None
+                break
+        if u0 == None:
+            last_step = s - 1
             break
         else:
-            u0 = delta
+            u0 = next_u
 
         # solve ODE for next time interval with input u0 from new initial set z0
-        z = odeint(agents_model, z0, tspan, args=(u0, 1))
+        z = odeint(agents_model, z0, tspan, args=(u0,))
         # store solution (x,y) for plotting
-        x = np.append(x, [z[1][i][0] for i in range(N)])
-        y = np.append(y, [z[1][i][1] for i in range(N)])
-        vx = np.append(x, [z[1][i][2] for i in range(N)])
-        vy = np.append(y, [z[1][i][3] for i in range(N)])
+        x = np.append(x, [z[1][4*i+0] for i in range(N)])
+        y = np.append(y, [z[1][4*i+1] for i in range(N)])
+        vx = np.append(x, [z[1][4*i+2] for i in range(N)])
+        vy = np.append(y, [z[1][4*i+3] for i in range(N)])
     
         # next initial conditions
         z0 = z[1]
+        # next conformal parameters
+        err = [0] * N
+        for i in range(N):
+            for j in sensed_a[i]:
+                if not cbf_agents_ML(z0, i, j, u0[2*i:2*i+2], zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl):
+                    err[i] = 1
+                    break  
+        lmbd = next_lmbd(lmbd, err)
 
     '''Plot initial positions and obstacles'''
     for i in range(N):
@@ -238,10 +235,10 @@ def path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl):
         ax.add_patch(obs_c)
 
     '''Plot the trajectories of the agents'''
-    '''for i in range(N):
-        x_i = [x[s][i] for s in range(nb_steps)]
-        y_i = [y[s][i] for s in range(nb_steps)]
-        plt.plot(x_i, y_i, '--', color='0.5', linewidth=2)'''
+    for i in range(N):
+        x_i = [x[N*s+i] for s in range(last_step)]
+        y_i = [y[N*s+i] for s in range(last_step)]
+        plt.plot(x_i, y_i, '--', color='g', linewidth=2)
 
     '''Plot goal positions'''
     for i in range(N):
@@ -259,6 +256,7 @@ def path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl):
 
     ax.set_aspect('equal', adjustable='box')
 
+    print("Length of path:", len(x))
     plt.show()
 
 
@@ -272,14 +270,15 @@ Thorizon = sim_mdl['max_t'] / Nsample
 t = np.linspace(0, Thorizon, Nsample)
 
 '''Initial state and input'''
-N = 4
+N = 2
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
 x_start = [2 * x_lim * i / (N+1) - x_lim for i in range(1, N+1)]
 
-z0 = [[x_start[i], y_start, 0, 0] for i in range(N)]
-u0 = [[0, 0] for _ in range(N)]
+z0 = [x for i in range(N) for x in [x_start[i], y_start, 0, 0]]
+
+u0 = [0 for _ in range(2 * N)]
 
 '''Random obstacle generation'''
 M = 4
@@ -308,4 +307,11 @@ pass
 # cone
 pass
 
-path_control(z0, u0, t, d, obs, agent_mdl, obs_mdl)
+zeta_a = lambda x: x
+eta_a = lambda _: 1
+zeta_o = lambda _: 1
+eta_o = lambda _: 1
+
+lmbd0 = [1] * N
+
+path_control(z0, u0, lmbd0, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o)
