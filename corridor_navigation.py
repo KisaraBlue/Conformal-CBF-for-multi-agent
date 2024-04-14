@@ -11,21 +11,26 @@ import cvxpy as cp
 '''Similation parameters:
     maximal time step, time interval,
     start and end positions'''
-sim_mdl = {'max_t': 500,
-           'dt': .05,
+sim_mdl = {'max_t': 2000,
+           'dt': .01,
            'x_lim': 2,
            'y_start': 3,
            'y_end': -2,
-           'epsilon': .05,
+           'epsilon': .2,
            'err_rate': .05,
            'learn_rate': .05}
+
+# max velocity is .5 per time step when dt = .05
+max_velocity = (.5 / .05) * sim_mdl['dt']
+max_acceleration = 2 * max_velocity / sim_mdl['dt']
 
 '''Agent parameters: 
     radius, sensing range,
     maximal velocity per time step'''
 agent_mdl = {'r': .15,
             'sense': 2,
-            'max_v': .5}
+            'max_v': max_velocity,
+            'max_u': max_acceleration}
 
 '''Obstacle parameters: 
     radius'''
@@ -40,6 +45,7 @@ def agents_model(z, t, u):
     '''
     N = len(z) // 4
     max_v = agent_mdl['max_v']
+    max_u = agent_mdl['max_u']
 
     dzdt = []
     for i in range(N):
@@ -51,8 +57,14 @@ def agents_model(z, t, u):
             vy_i = np.sign(vy_i) * max_v
         dzdt.append(vx_i)
         dzdt.append(vy_i)
-        dzdt.append(u[2*i+0])
-        dzdt.append(u[2*i+1])
+        ux_i = u[2*i+0]
+        if abs(ux_i) > max_u:
+            ux_i = np.sign(ux_i) * max_u
+        uy_i = u[2*i+1]
+        if abs(uy_i) > max_u:
+            uy_i = np.sign(uy_i) * max_u
+        dzdt.append(ux_i)
+        dzdt.append(uy_i)
 
     return dzdt
 
@@ -250,7 +262,8 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
     '''plot parameters'''
     plt.legend(loc='lower right', fontsize='x-large')
     plt.tick_params(axis='both', labelsize=20)
-    plt.title('test')
+    name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['err_rate'])
+    plt.title(name)
     ax.set_xlim([-2, 2])
     ax.set_ylim([-4, 4])
 
@@ -270,7 +283,7 @@ Thorizon = sim_mdl['max_t'] / Nsample
 t = np.linspace(0, Thorizon, Nsample)
 
 '''Initial state and input'''
-N = 2
+N = 4
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
@@ -281,7 +294,7 @@ z0 = [x for i in range(N) for x in [x_start[i], y_start, 0, 0]]
 u0 = [0 for _ in range(2 * N)]
 
 '''Random obstacle generation'''
-M = 4
+M = 2
 r_obs = obs_mdl['r']
 y_obs_min = y_end + agent_mdl['r'] + r_obs
 y_obs_max = y_start - agent_mdl['r'] - r_obs
@@ -309,7 +322,7 @@ pass
 
 zeta_a = lambda x: x
 eta_a = lambda _: 1
-zeta_o = lambda _: 1
+zeta_o = lambda _: 5
 eta_o = lambda _: 1
 
 lmbd0 = [1] * N
