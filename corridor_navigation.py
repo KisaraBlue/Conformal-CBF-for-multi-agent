@@ -11,12 +11,12 @@ import cvxpy as cp
 '''Similation parameters:
     maximal time step, time interval,
     start and end positions'''
-sim_mdl = {'max_t': 2000,
+sim_mdl = {'max_t': 6000,
            'dt': .01,
            'x_lim': 2,
            'y_start': 3,
            'y_end': -2,
-           'epsilon': .2,
+           'epsilon': .4, # very sensitive
            'err_rate': .05,
            'learn_rate': .05}
 
@@ -120,7 +120,7 @@ def edge_sensing_range(z, obs):
     return sensed_a, sensed_o
 
 
-def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o):
+def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''Inputs:
 	   z: Current agents' state
 	   Output to be computed: 	
@@ -144,7 +144,7 @@ def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, et
         else:
             ui = cp.Variable(udim)
             di = cp.Variable(1)
-            objective = cp.Minimize(cp.norm2(ui) + di ** 2)
+            objective = cp.Minimize(cp.norm2(ui) + xi(di) ** 2)
             constraints = [clf_c(z, i, d, ui, epsilon, di)]
             for j in sensed_a[i]:
                 constraints.append(cbf_agents_ML(z, i, j, ui, zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl))
@@ -153,7 +153,7 @@ def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, et
             problem = cp.Problem(objective, constraints)
 
             problem.solve()
-            if problem.status != 'infeasible':
+            if problem.status != 'infeasible' and problem.status != 'infeasible_inaccurate':
                 slack.append(di.value)
                 u.append(ui.value[0])
                 u.append(ui.value[1])
@@ -173,7 +173,7 @@ def next_lmbd(lmbd, err):
     eps = sim_mdl['err_rate']
     return [lmbd[i] + eta * (eps - err[i]) for i in range(len(lmbd))]
 
-def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o):
+def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''
         z0,u0: initial state, velocity
         t: time sequence for simulation
@@ -206,7 +206,7 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
         tspan = [t[s - 1], t[s]]
 
         # next controller input
-        next_u, sensed_a = qp_controller(z0, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o)
+        next_u, sensed_a = qp_controller(z0, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi)
         for ui in next_u:
             if ui == None:
                 print("Can't continue loop")
@@ -283,7 +283,7 @@ Thorizon = sim_mdl['max_t'] / Nsample
 t = np.linspace(0, Thorizon, Nsample)
 
 '''Initial state and input'''
-N = 4
+N = 2
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
@@ -296,15 +296,16 @@ u0 = [0 for _ in range(2 * N)]
 '''Random obstacle generation'''
 M = 2
 r_obs = obs_mdl['r']
-y_obs_min = y_end + agent_mdl['r'] + r_obs
-y_obs_max = y_start - agent_mdl['r'] - r_obs
+r_agent = agent_mdl['r']
+y_obs_min = y_end + r_agent + r_obs
+y_obs_max = y_start - r_agent - r_obs
 x_obs_min = - x_lim + r_obs
 x_obs_max = x_lim - r_obs
 obs = []
 while len(obs) < M:
     candidate = (x_obs_max - x_obs_min) * np.random.random(2) + x_obs_min
     for o in obs:
-        if dist(o, candidate) < 2 * r_obs:
+        if dist(o, candidate) < 2 * r_obs + 2.5 * r_agent:
             candidate = [None, None]
             break
     if candidate[0]:
@@ -322,9 +323,10 @@ pass
 
 zeta_a = lambda x: x
 eta_a = lambda _: 1
-zeta_o = lambda _: 5
-eta_o = lambda _: 1
+zeta_o = lambda x: x / 2
+eta_o = lambda _: 2
+xi = lambda delta: cp.exp(delta ** 2) 
 
 lmbd0 = [1] * N
 
-path_control(z0, u0, lmbd0, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o)
+path_control(z0, u0, lmbd0, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi)
