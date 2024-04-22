@@ -2,6 +2,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+import matplotlib.collections as mcoll
 
 from scipy.integrate import odeint
 
@@ -237,6 +238,8 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
                     err[i] = 1
                     break  
         lmbd = next_lmbd(lmbd, err)
+        max_s = s
+    
 
     '''Plot initial positions and obstacles'''
     for i in range(N):
@@ -250,7 +253,9 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
     for i in range(N):
         x_i = [x[N*s+i] for s in range(last_step)]
         y_i = [y[N*s+i] for s in range(last_step)]
-        plt.plot(x_i, y_i, '--', color='g', linewidth=2)
+        # plt.plot(x_i, y_i, '-', color='g', linewidth=2)
+        lc = colorline(x_i, y_i, max_s, cmap='winter')
+    plt.colorbar(lc, label='Time steps')
 
     '''Plot goal positions'''
     for i in range(N):
@@ -265,12 +270,43 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
     name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['err_rate'])
     plt.title(name)
     ax.set_xlim([-2, 2])
+    plt.xticks(fontsize=9)
     ax.set_ylim([-4, 4])
+    plt.yticks(fontsize=9)
 
     ax.set_aspect('equal', adjustable='box')
 
     print("Length of path:", len(x))
     plt.show()
+
+    
+def colorline(
+        x, y, max_t, z=None, cmap='copper',
+        linewidth=3, alpha=1.0):
+    
+    norm = plt.Normalize(0.0, max_t)
+
+    # Default colors equally spaced on [0,1]:
+    if z is None:
+        z = np.linspace(0.0, max_t, len(x))
+    if not hasattr(z, "__iter__"):
+        z = np.array([z])
+
+    z = np.asarray(z)
+
+    segments = make_segments(x, y)
+    lc = mcoll.LineCollection(segments, array=z, cmap=cmap, norm=norm,
+                              linewidth=linewidth, alpha=alpha)
+
+    ax = plt.gca()
+    ax.add_collection(lc)
+
+    return lc
+
+def make_segments(x, y):
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    return segments
 
 
 ''' Setup for runnint the simulation
@@ -293,8 +329,7 @@ z0 = [x for i in range(N) for x in [x_start[i], y_start, 0, 0]]
 
 u0 = [0 for _ in range(2 * N)]
 
-'''Random obstacle generation'''
-M = 2
+'''Obstacle generation'''
 r_obs = obs_mdl['r']
 r_agent = agent_mdl['r']
 y_obs_min = y_end + r_agent + r_obs
@@ -302,14 +337,27 @@ y_obs_max = y_start - r_agent - r_obs
 x_obs_min = - x_lim + r_obs
 x_obs_max = x_lim - r_obs
 obs = []
-while len(obs) < M:
-    candidate = (x_obs_max - x_obs_min) * np.random.random(2) + x_obs_min
-    for o in obs:
-        if dist(o, candidate) < 2 * r_obs + 2.5 * r_agent:
-            candidate = [None, None]
-            break
-    if candidate[0]:
-        obs.append(candidate)
+
+mode = 'manual' # manual | random
+
+if mode == 'random':
+    M = 3
+    while len(obs) < M:
+        candidate = (x_obs_max - x_obs_min) * np.random.random(2) + x_obs_min
+        for o in obs:
+            if dist(o, candidate) < 2 * r_obs + 2.5 * r_agent:
+                candidate = [None, None]
+                break
+        if not candidate[0] is None:
+            obs.append(candidate)
+
+if mode == 'manual':
+    center = [[0, 0]]
+    pair = [[1, 0], [-1, 0]]
+    trapezoid = [[.67, 1], [-.67, 1], [1.33, -1], [-1.33, -1]]
+    diamond = [[0, 1], [0, -1], [1, 0], [-1, 0]]
+    obs = diamond
+    M = len(obs)
 
 '''Goal generation'''
 # directly underneath
