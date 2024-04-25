@@ -12,17 +12,17 @@ import cvxpy as cp
 '''Similation parameters:
     maximal time step, time interval,
     start and end positions'''
-sim_mdl = {'max_t': 6000,
-           'dt': .01,
+sim_mdl = {'max_t': 5000,
+           'dt': .05,
            'x_lim': 2,
            'y_start': 3,
            'y_end': -2,
-           'epsilon': .4, # very sensitive
+           'epsilon': .2, # very sensitive
            'err_rate': .05,
            'learn_rate': .05}
 
 # max velocity is .5 per time step when dt = .05
-max_velocity = (.5 / .05) * sim_mdl['dt']
+max_velocity = .5 * sim_mdl['dt']
 max_acceleration = 2 * max_velocity / sim_mdl['dt']
 
 '''Agent parameters: 
@@ -59,11 +59,12 @@ def agents_model(z, t, u):
         dzdt.append(vx_i)
         dzdt.append(vy_i)
         ux_i = u[2*i+0]
+        uy_i = u[2*i+1]
+        '''
         if abs(ux_i) > max_u:
             ux_i = np.sign(ux_i) * max_u
-        uy_i = u[2*i+1]
         if abs(uy_i) > max_u:
-            uy_i = np.sign(uy_i) * max_u
+            uy_i = np.sign(uy_i) * max_u'''
         dzdt.append(ux_i)
         dzdt.append(uy_i)
 
@@ -88,16 +89,24 @@ def h_agents(z, i, j, agent_mdl):
 def h_obstacle(z, obs, i, l, agent_mdl, obs_mdl):
     return dist2(z[4*i:4*i+2], obs[l]) - (agent_mdl['r'] + obs_mdl['r']) ** 2
 
-def cbf_agents_ML(z, i, j, ui, zeta_a, eta_a, agent_mdl):
+def h_wall(z, walls, i, l):
+    return dist2(z[4*i:4*i+2], (walls[l], z[4*i+1]))
+
+def cbf_agents(z, i, j, ui, zeta_a, eta_a, agent_mdl):
     vec_ij = [z[4*i+0] - z[4*j+0], z[4*i+1] - z[4*j+1]]
     vec_uivj = [ui[0] - z[4*j+2], ui[1] - z[4*j+3]]
     h = h_agents(z, i, j, agent_mdl)
     return 2 * np.matmul(vec_ij, vec_uivj) + zeta_a * (h ** eta_a) >= 0
 
-def cbf_obstacle_ML(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl):
+def cbf_obstacle(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl):
     vec_il = [z[4*i+0] - obs[l][0], z[4*i+1] - obs[l][1]]
     h = h_obstacle(z, obs, i, l, agent_mdl, obs_mdl)
     return 2 * np.matmul(vec_il, ui) + zeta_o * (h ** eta_o) >= 0
+
+def cbf_wall(z, walls, i, l, ui):
+    vec_il = [z[4*i+0] - walls[l], 0]
+    h = h_wall(z, walls, i, l)
+    return 2 * np.matmul(vec_il, ui) + h >= 0
 
 def edge_sensing_range(z, obs):
     N = len(z) // 4
@@ -121,7 +130,7 @@ def edge_sensing_range(z, obs):
     return sensed_a, sensed_o
 
 
-def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi):
+def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''Inputs:
 	   z: Current agents' state
 	   Output to be computed: 	
@@ -148,9 +157,11 @@ def qp_controller(z, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, et
             objective = cp.Minimize(cp.norm2(ui) + xi(di) ** 2)
             constraints = [clf_c(z, i, d, ui, epsilon, di)]
             for j in sensed_a[i]:
-                constraints.append(cbf_agents_ML(z, i, j, ui, zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl))
+                constraints.append(cbf_agents(z, i, j, ui, zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl))
             for l in sensed_o[i]:
-                constraints.append(cbf_obstacle_ML(z, obs, i, l, ui, zeta_o(1), eta_o(1), agent_mdl, obs_mdl))
+                constraints.append(cbf_obstacle(z, obs, i, l, ui, zeta_o(1), eta_o(1), agent_mdl, obs_mdl))
+            for l in range(len(walls)):
+                constraints.append(cbf_wall(z, walls, i, l, ui))
             problem = cp.Problem(objective, constraints)
 
             problem.solve()
@@ -174,7 +185,7 @@ def next_lmbd(lmbd, err):
     eps = sim_mdl['err_rate']
     return [lmbd[i] + eta * (eps - err[i]) for i in range(len(lmbd))]
 
-def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi):
+def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''
         z0,u0: initial state, velocity
         t: time sequence for simulation
@@ -183,21 +194,31 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
     nb_steps = len(t)
     N = len(z0) // 4 
     r_agent = agent_mdl['r']
+    M = len(obs)
 
     '''These vectors will store the state variables of the vehicle'''
     x = np.array([])
     y = np.array([])
     vx = np.array([])
     vy = np.array([])
+
+    ux = np.array([])
+    uy = np.array([])
+    h_obs = np.array([])
+
     ''' Initialization of x, y, theta, xf, yf'''
     x = np.append(x, [z0[4*i+0] for i in range(N)])
     y = np.append(y, [z0[4*i+1] for i in range(N)])
-    vx = np.append(x, [z0[4*i+2] for i in range(N)])
-    vy = np.append(y, [z0[4*i+3] for i in range(N)])
+    vx = np.append(vx, [z0[4*i+2] for i in range(N)])
+    vy = np.append(vy, [z0[4*i+3] for i in range(N)])
+
+    h_obs = np.append(h_obs, [h_obstacle(z0, obs, 0, l, agent_mdl, obs_mdl) for l in range(M)])
 
     """ setting up the figure """
-    plt.figure()
-    ax = plt.gca()
+    main_ax = plt.gca()
+    _, axs = plt.subplots(2, 2)
+    #plt.figure()
+    
 
     """This loop solves the ODE for each pair of time points
     with fixed controller input"""
@@ -207,7 +228,7 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
         tspan = [t[s - 1], t[s]]
 
         # next controller input
-        next_u, sensed_a = qp_controller(z0, obs, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi)
+        next_u, sensed_a = qp_controller(z0, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi)
         for ui in next_u:
             if ui == None:
                 print("Can't continue loop")
@@ -218,6 +239,8 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
             last_step = s - 1
             break
         else:
+            ux = np.append(ux, [next_u[2*i+0] for i in range(N)])
+            uy = np.append(uy, [next_u[2*i+1] for i in range(N)])
             u0 = next_u
 
         # solve ODE for next time interval with input u0 from new initial set z0
@@ -225,8 +248,10 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
         # store solution (x,y) for plotting
         x = np.append(x, [z[1][4*i+0] for i in range(N)])
         y = np.append(y, [z[1][4*i+1] for i in range(N)])
-        vx = np.append(x, [z[1][4*i+2] for i in range(N)])
-        vy = np.append(y, [z[1][4*i+3] for i in range(N)])
+        vx = np.append(vx, [z[1][4*i+2] for i in range(N)])
+        vy = np.append(vy, [z[1][4*i+3] for i in range(N)])
+
+        h_obs = np.append(h_obs, [h_obstacle(z[1], obs, 0, l, agent_mdl, obs_mdl) for l in range(M)])
     
         # next initial conditions
         z0 = z[1]
@@ -234,54 +259,70 @@ def path_control(z0, u0, lmbd, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zet
         err = [0] * N
         for i in range(N):
             for j in sensed_a[i]:
-                if not cbf_agents_ML(z0, i, j, u0[2*i:2*i+2], zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl):
+                if not cbf_agents(z0, i, j, u0[2*i:2*i+2], zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl):
                     err[i] = 1
                     break  
         lmbd = next_lmbd(lmbd, err)
-        max_s = s
     
 
     '''Plot initial positions and obstacles'''
     for i in range(N):
         start_c = plt.Circle((x[i], y[i]), r_agent, fill=False) #to change
-        ax.add_patch(start_c)
+        main_ax.add_patch(start_c)
     for l in range(M):
         obs_c = plt.Circle((obs[l][0], obs[l][1]), obs_mdl['r'], fill=True)
-        ax.add_patch(obs_c)
+        main_ax.add_patch(obs_c)
 
     '''Plot the trajectories of the agents'''
     for i in range(N):
         x_i = [x[N*s+i] for s in range(last_step)]
         y_i = [y[N*s+i] for s in range(last_step)]
         # plt.plot(x_i, y_i, '-', color='g', linewidth=2)
-        lc = colorline(x_i, y_i, max_s, cmap='winter')
+        lc = colorline(x_i, y_i, last_step, main_ax, cmap='winter')
+        
+        ux_i = [ux[N*s+i] for s in range(last_step)]
+        uy_i = [uy[N*s+i] for s in range(last_step)]
+        lc_u = colorline(ux_i, uy_i, last_step, axs[0,0], cmap='winter')
+    plt.colorbar(lc_u, label='Time steps')
     plt.colorbar(lc, label='Time steps')
+
+    '''Plot the CBF constraint for agent 1'''
+    for l in range(M):
+        t = np.linspace(0, last_step - 1, last_step)
+        h_l = [h_obs[M*s+l] for s in range(last_step)]
+        axs[1,0].plot(t, h_l)
+        #lc_h = colorline(t, h_l, last_step, axs[1,0], cmap='winter')
+    #plt.colorbar(lc_h, label='Time steps')
 
     '''Plot goal positions'''
     for i in range(N):
         corner = [d[i][0] - r_agent, d[i][1] - r_agent]
         side = 2 * r_agent
-        ax.add_patch(Rectangle(corner, side, side, linewidth=1,
+        main_ax.add_patch(Rectangle(corner, side, side, linewidth=1,
                                edgecolor='r', facecolor='none'))
 
     '''plot parameters'''
-    plt.legend(loc='lower right', fontsize='x-large')
-    plt.tick_params(axis='both', labelsize=20)
-    name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['err_rate'])
-    plt.title(name)
-    ax.set_xlim([-2, 2])
+    main_ax.legend(loc='lower right', fontsize='x-large')
+    #main_ax.tick_params(axis='both', labelsize=20)
+    name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['learn_rate'])
+    #plt.title(name)
+    main_ax.set_xlim([-2, 2])
     plt.xticks(fontsize=9)
-    ax.set_ylim([-4, 4])
+    main_ax.set_ylim([-4, 4])
     plt.yticks(fontsize=9)
 
-    ax.set_aspect('equal', adjustable='box')
+    main_ax.set_aspect('equal', adjustable='box')
+
+    axs[0,0].set_xlim([-.5, .5])
+    axs[0,0].set_ylim([-.5, .5])
+
 
     print("Length of path:", len(x))
     plt.show()
 
     
 def colorline(
-        x, y, max_t, z=None, cmap='copper',
+        x, y, max_t, ax, z=None, cmap='copper',
         linewidth=3, alpha=1.0):
     
     norm = plt.Normalize(0.0, max_t)
@@ -293,12 +334,10 @@ def colorline(
         z = np.array([z])
 
     z = np.asarray(z)
-
     segments = make_segments(x, y)
     lc = mcoll.LineCollection(segments, array=z, cmap=cmap, norm=norm,
                               linewidth=linewidth, alpha=alpha)
-
-    ax = plt.gca()
+    #ax = plt.gca()
     ax.add_collection(lc)
 
     return lc
@@ -319,7 +358,7 @@ Thorizon = sim_mdl['max_t'] / Nsample
 t = np.linspace(0, Thorizon, Nsample)
 
 '''Initial state and input'''
-N = 2
+N = 1
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
@@ -338,12 +377,14 @@ x_obs_min = - x_lim + r_obs
 x_obs_max = x_lim - r_obs
 obs = []
 
-mode = 'manual' # manual | random
+mode = 'random' # manual | random
 
 if mode == 'random':
-    M = 3
+    M = 2
     while len(obs) < M:
-        candidate = (x_obs_max - x_obs_min) * np.random.random(2) + x_obs_min
+        x_c = (x_obs_max - x_obs_min) * np.random.random(1) + x_obs_min
+        y_c = (y_obs_max - y_obs_min) * np.random.random(1) + y_obs_min
+        candidate = [x_c, y_c]
         for o in obs:
             if dist(o, candidate) < 2 * r_obs + 2.5 * r_agent:
                 candidate = [None, None]
@@ -356,8 +397,11 @@ if mode == 'manual':
     pair = [[1, 0], [-1, 0]]
     trapezoid = [[.67, 1], [-.67, 1], [1.33, -1], [-1.33, -1]]
     diamond = [[0, 1], [0, -1], [1, 0], [-1, 0]]
-    obs = diamond
+    obs = pair
     M = len(obs)
+
+'''Walls'''
+walls = [-x_lim, x_lim]
 
 '''Goal generation'''
 # directly underneath
@@ -371,10 +415,10 @@ pass
 
 zeta_a = lambda x: x
 eta_a = lambda _: 1
-zeta_o = lambda x: x / 2
-eta_o = lambda _: 2
-xi = lambda delta: cp.exp(delta ** 2) 
+zeta_o = lambda x: x
+eta_o = lambda _: 1
+xi = lambda delta: delta
 
 lmbd0 = [1] * N
 
-path_control(z0, u0, lmbd0, t, d, obs, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi)
+path_control(z0, u0, lmbd0, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi)
