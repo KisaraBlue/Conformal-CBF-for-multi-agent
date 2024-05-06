@@ -13,25 +13,21 @@ import cvxpy as cp
     maximal time step, time interval,
     start and end positions'''
 sim_mdl = {'max_t': 500,
-           'dt': .005,
+           'dt': .05,
            'x_lim': 2,
            'y_start': 3,
            'y_end': -2,
-           'epsilon': .3, # very sensitive
+           'epsilon': .2, # very sensitive
            'err_rate': .05,
-           'learn_rate': .05}
-
-# max velocity is .5 per time step when dt = .05
-max_velocity = .25 * sim_mdl['dt']
-max_acceleration = 2 * max_velocity / sim_mdl['dt']
+           'learn_rate': .05,
+           }
 
 '''Agent parameters: 
     radius, sensing range,
     maximal velocity per time step'''
 agent_mdl = {'r': .15,
             'sense': 2,
-            'max_v': max_velocity,
-            'max_u': max_acceleration}
+            'max_v': .5}
 
 '''Obstacle parameters: 
     radius'''
@@ -45,8 +41,6 @@ def agents_model(z, t, u):
     u[i][0], u[i][1]: input velocity of agent i
     '''
     N = len(z) // 4
-    max_v = agent_mdl['max_v']
-    max_u = agent_mdl['max_u']
 
     dzdt = []
     for i in range(N):
@@ -129,6 +123,12 @@ def edge_sensing_range(z, obs):
     
     return sensed_a, sensed_o
 
+def speed_constraints(z, i, ui, max_velocity, sim_mdl):
+    inv_dt = 1 / sim_mdl['dt']
+    v_i = z[4*i+2:4*i+4]
+    return [- inv_dt * (v_i[0] + max_velocity) <= ui[0], ui[0] <= inv_dt * (max_velocity - v_i[0]),
+            - inv_dt * (v_i[1] + max_velocity) <= ui[1], ui[1] <= inv_dt * (max_velocity - v_i[1])]
+
 
 def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''Inputs:
@@ -137,7 +137,8 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
 	   u: control velocity
     '''
     N = len(z) // 4
-    sensed_a, sensed_o = edge_sensing_range(z, obs)
+    # sensed_a, sensed_o = edge_sensing_range(z, obs)
+    sensed_a, sensed_o = [[]], obs
 
     r_agent_2 = agent_mdl['r'] ** 2
 
@@ -159,9 +160,11 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
             for j in sensed_a[i]:
                 constraints.append(cbf_agents(z, i, j, ui, zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl))
             for l in sensed_o[i]:
-                constraints.append(cbf_obstacle(z, obs, i, l, ui, zeta_o(5), eta_o(3), agent_mdl, obs_mdl))
+                constraints.append(cbf_obstacle(z, obs, i, l, ui, zeta_o(10), eta_o(3), agent_mdl, obs_mdl))
             for l in range(len(walls)):
                 constraints.append(cbf_wall(z, walls, i, l, ui))
+            for s in speed_constraints(z, i, ui, agent_mdl['max_v'], sim_mdl):
+                constraints.append(s)
             problem = cp.Problem(objective, constraints)
 
             problem.solve()
@@ -283,33 +286,33 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
         main_ax.add_patch(obs_c)
 
     '''Plot the trajectories of the agents'''
+    t = np.linspace(0, last_step - 1, last_step)
+
     for i in range(N):
         x_i = [x[N*s+i] for s in range(last_step)]
         y_i = [y[N*s+i] for s in range(last_step)]
         # plt.plot(x_i, y_i, '-', color='g', linewidth=2)
         lc = colorline(x_i, y_i, last_step, main_ax, cmap='winter')
         
-        ux_i = [ux[N*s+i] for s in range(last_step)]
-        uy_i = [uy[N*s+i] for s in range(last_step)]
-        lc_u = colorline(ux_i, uy_i, last_step, axs[0,0], cmap='winter')
-    plt.colorbar(lc_u, label='Time steps')
+        u_i = [dist([ux[N*s+i],uy[N*s+i]],[0,0]) for s in range(last_step)]
+        axs[0,0].plot(t, u_i)
+        axs[0,0].title.set_text('Norm(U) of agents')
     plt.colorbar(lc, label='Time steps')
 
     '''Plot the CBF constraint for agent 1'''
     for l in range(M):
-        t = np.linspace(0, last_step - 1, last_step)
         h_l = [h_obs[M*s+l] for s in range(last_step)]
         axs[1,0].plot(t, h_l)
-        #lc_h = colorline(t, h_l, last_step, axs[1,0], cmap='winter')
+        axs[1,0].title.set_text('Obs CBFs of A_1')
     #plt.colorbar(lc_h, label='Time steps')
     for i in range(N):
-        t = np.linspace(0, last_step - 1, last_step)
         clf_i = [clf[N*s+i] for s in range(last_step)]
         axs[0,1].plot(t, clf_i)
+        axs[0,1].title.set_text('CLF of A_1')
     for i in range(N):
-        t = np.linspace(0, last_step - 1, last_step)
         delta_i = [delta[N*s+i] for s in range(last_step)]
         axs[1,1].plot(t, delta_i)
+        axs[1,1].title.set_text('Delta of A_1')
     
 
 
@@ -332,10 +335,6 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
     plt.yticks(fontsize=9)
 
     main_ax.set_aspect('equal', adjustable='box')
-
-    axs[0,0].set_xlim([-.5, .5])
-    axs[0,0].set_ylim([-.5, .5])
-
 
     print("Length of path:", len(x))
     print("Last setp:", s)
@@ -402,7 +401,7 @@ obs = []
 mode = 'manual' # manual | random
 
 if mode == 'random':
-    M = 2
+    M = 1
     while len(obs) < M:
         x_c = (x_obs_max - x_obs_min) * np.random.random(1) + x_obs_min
         y_c = (y_obs_max - y_obs_min) * np.random.random(1) + y_obs_min
@@ -415,6 +414,7 @@ if mode == 'random':
             obs.append(candidate)
 
 if mode == 'manual':
+    empty = []
     center = [[0, 0]]
     pair = [[1, 0], [-1, 0]]
     trapezoid = [[.67, 1], [-.67, 1], [1.33, -1], [-1.33, -1]]
