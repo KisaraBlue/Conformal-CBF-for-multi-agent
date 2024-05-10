@@ -19,7 +19,7 @@ import cvxpy as cp
     - error rate for agent CBF adptation,
     - learning rate for conformal parameters'''
 sim_mdl = {'max_t': 5000,
-           'dt': .05,
+           'dt': .005,
            'x_lim': 2,
            'y_start': 3,
            'y_end': -2,
@@ -33,7 +33,7 @@ sim_mdl = {'max_t': 5000,
     - sensing range,
     - maximal velocity (per sec)'''
 agent_mdl = {'r': .15,
-            'sense': 10, #2
+            'sense': 10, # default: 2
             'max_v': .5}
 
 '''Obstacle parameters: 
@@ -44,7 +44,7 @@ obs_mdl = {'r': .5}
 def agents_model(z, t, u):
     '''
     Dynamics of the concatenated system (z, u)
-    Parameters:
+    Inputs:
         - z[4*i+0], z[4*i+1]: Position of agent i in stationary coordinates
         - z[4*i+2], z[4*i+3]: Velocity of agent i in stationary coordinates
         - t: time (unused)
@@ -75,7 +75,7 @@ def agents_model(z, t, u):
 def dist2(a1, a2):
     '''
     Square of the euclidian distance for 2D vectors
-    Parameters:
+    Inputs:
         - a1: first vector
         - a2: second vector
     '''
@@ -84,7 +84,7 @@ def dist2(a1, a2):
 def dist(a1, a2):
     '''
     Euclidian distance for 2D vectors
-    Parameters:
+    Inputs:
         - a1: first vector
         - a2: second vector
     '''
@@ -93,7 +93,7 @@ def dist(a1, a2):
 def lyapunov_f(z, i, d):
     '''
     Lyapunov function: squared distance between an agent and its goal
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - i: index of agent
         - d: list of goal positions of all agents
@@ -103,7 +103,7 @@ def lyapunov_f(z, i, d):
 def clf_function(z, i, d, ui, epsilon, delta_i):
     '''
     CLF function for an agent (eq. (15))
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - i: index of agent
         - d: list of goal positions of all agents
@@ -117,7 +117,7 @@ def clf_function(z, i, d, ui, epsilon, delta_i):
 def h_agents(z, i, j, agent_mdl):
     '''
     Control Barrier Function for a pair of agents
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - i: index of agent
         - j: index of agent
@@ -128,7 +128,7 @@ def h_agents(z, i, j, agent_mdl):
 def h_obstacle(z, obs, i, l, agent_mdl, obs_mdl):
     '''
     Control Barrier Function for a pair (agent, obstacle)
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - obs: list of obstacles
         - i: index of agent
@@ -136,23 +136,40 @@ def h_obstacle(z, obs, i, l, agent_mdl, obs_mdl):
         - agent_mdl: agent parameters
         - obs_mdl: obstacle parameters
     '''
-    return dist2(z[4*i:4*i+2], obs[l]) - (agent_mdl['r'] + obs_mdl['r']) ** 2
+    return dist2(z[4*i:4*i+2], obs[l]) - (agent_mdl['r'] + obs_mdl['r'] + .5) ** 2
 
-def h_wall(z, walls, i, l):
+def h_wall(z, walls, i, l, agent_mdl):
     '''
     Control Barrier Function for a pair (agent, wall)
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - walls: list of walls
         - i: index of agent
         - l: index of wall
     '''
-    return dist2(z[4*i:4*i+2], (walls[l], z[4*i+1]))
+    dir = walls[l][0]
+    if dir == 'W' or dir == 'E':
+        cy = z[4*i+1]
+        if dir == 'W':
+            cx = walls[l][1] + agent_mdl['r']
+            return np.sign(z[4*i] - cx) * dist2(z[4*i:4*i+2], (cx, cy))
+        else:
+            cx = walls[l][1] - agent_mdl['r']
+            return np.sign(cx - z[4*i]) * dist2(z[4*i:4*i+2], (cx, cy))
+    else:
+        cx = z[4*i]
+        if dir == 'S':
+            cy = walls[l][1] + agent_mdl['r']
+            return np.sign(z[4*i+1] - cy) * dist2(z[4*i:4*i+2], (cx, cy))
+        else:
+            cy = walls[l][1] - agent_mdl['r']
+            return np.sign(cy - z[4*i+1]) * dist2(z[4*i:4*i+2], (cx, cy))
+    
 
 def cbf_agents(z, i, j, ui, zeta_a, eta_a, agent_mdl):
     '''
     CBF constraint for a pair of agents (eq. (17-1))
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - i: index of agent
         - j: index of agent
@@ -169,7 +186,7 @@ def cbf_agents(z, i, j, ui, zeta_a, eta_a, agent_mdl):
 def cbf_obstacle(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl):
     '''
     CBF constraint for a pair of (agent, obstacle) (eq. (17-1))
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - obs: list of obstacles
         - i: index of agent
@@ -184,28 +201,50 @@ def cbf_obstacle(z, obs, i, l, ui, zeta_o, eta_o, agent_mdl, obs_mdl):
     h = h_obstacle(z, obs, i, l, agent_mdl, obs_mdl)
     return 2 * np.matmul(vec_il, ui) + zeta_o * (h ** eta_o) >= 0
 
-def cbf_wall(z, walls, i, l, ui):
+def cbf_wall(z, walls, i, l, ui, zeta_o, eta_o, agent_mdl):
     '''
     CBF constraint for a pair of (agent, wall)
-    Parameters:
+    Inputs:
         - z: concatenated state of all agents
         - walls: list of walls
         - i: index of agent
         - l: index of wall
         - ui: cvxpy variable for control of agent i
+        - zeta_o: conformal factor for obstacles
+        - eta_o: conformal exponential for obstacles
+        - agent_mdl: agent parameters
     '''
-    vec_il = [z[4*i+0] - walls[l], 0]
-    h = h_wall(z, walls, i, l)
-    return 2 * np.matmul(vec_il, ui) + h >= 0
+    dir = walls[l][0]
+    if dir == 'W' or dir == 'E':
+        cy = z[4*i+1]
+        if dir == 'W':
+            cx = walls[l][1] + agent_mdl['r']
+        else:
+            cx = walls[l][1] - agent_mdl['r']
+    else:
+        cx = z[4*i]
+        if dir == 'S':
+            cy = walls[l][1] + agent_mdl['r']
+        else:
+            cy = walls[l][1] - agent_mdl['r']
+
+    vec_il = [z[4*i+0] - cx, z[4*i+1] - cy]
+    h = h_wall(z, walls, i, l, agent_mdl)
+    return 2 * np.matmul(vec_il, ui) + zeta_o * (h ** eta_o) >= 0
 
 def edge_sensing_range(z, obs):
+    '''
+    List of agents and obstacles in the sensing range of each agent
+    Inputs:
+        - z: concatenated state of all agents
+        - obs: list of obstacles
+    '''
     N = len(z) // 4
     r_agent = agent_mdl['r']
     r_sense = agent_mdl['sense']
     M = len(obs)
     r_obs = obs_mdl['r']
 
-    # Compute what is in the sensing range for each agent
     sensed_a = [[] for _ in range(N)]
     sensed_o = [[] for _ in range(N)]
     for i in range(N):
@@ -220,6 +259,15 @@ def edge_sensing_range(z, obs):
     return sensed_a, sensed_o
 
 def speed_constraints(z, i, ui, max_velocity, sim_mdl):
+    '''
+    Constraints on the control variable based on the current velocity of an agent
+    Inputs:
+        - z: concatenated state of all agents
+        - i: index of agent
+        - ui: cvxpy variable for control of agent i
+        - max_velocity: upper bound on the absolute velocity along each axis
+        - sim_mdl: simulation parameters
+    '''
     inv_dt = 1 / sim_mdl['dt']
     v_i = z[4*i+2:4*i+4]
     return [- inv_dt * (v_i[0] + max_velocity) <= ui[0], ui[0] <= inv_dt * (max_velocity - v_i[0]),
@@ -227,10 +275,21 @@ def speed_constraints(z, i, ui, max_velocity, sim_mdl):
 
 
 def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi):
-    '''Inputs:
-	   z: Current agents' state
-	   Output to be computed: 	
-	   u: control velocity
+    '''
+    Use cvxpy to solve for the control and slack respecting the CLF-CBF-speed constraints
+    Inputs:
+        - z: concatenated state of all agents
+        - obs: list of obstacles
+        - walls: list of walls
+        - agent_mdl: agent parameters
+        - obs_mdl: obsctacle parameters
+        - d: list of agent goal positions
+        - lmbd: conformal parameter
+        - zeta_a: conformal factor function for agents
+        - eta_a: conformal exponential function for agents
+        - zeta_o: conformal factor function for obstacles
+        - eta_o: conformal exponential function for obstacles
+        - xi: weight function applied to slack
     '''
     N = len(z) // 4
     sensed_a, sensed_o = edge_sensing_range(z, obs)
@@ -258,9 +317,8 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
             for l in sensed_o[i]:
                 constraints.append(cbf_obstacle(z, obs, i, l, ui, zeta_o(5), eta_o(1), agent_mdl, obs_mdl))
             for l in range(len(walls)):
-                constraints.append(cbf_wall(z, walls, i, l, ui))
+                constraints.append(cbf_wall(z, walls, i, l, ui, zeta_o(1), eta_o(1), agent_mdl))
             for s in speed_constraints(z, i, ui, agent_mdl['max_v'], sim_mdl):
-                break
                 constraints.append(s)
             problem = cp.Problem(objective, constraints)
 
@@ -279,25 +337,46 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
 
 
 def soft_positive_linear(x):
+    '''
+    Function used to smoothly project real to positive values
+    '''
     return np.log(1 + np.exp(x))
 
 def next_lmbd(lmbd, err):
+    '''
+    Update of conformal parameter for all agents
+    Inputs:
+        - list of conformal parameters
+        - list of errors detected
+    '''
     eta = sim_mdl['learn_rate']
     eps = sim_mdl['err_rate']
     return [lmbd[i] + eta * (eps - err[i]) for i in range(len(lmbd))]
 
 def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi):
     '''
-        z0,u0: initial state, velocity
-        t: time sequence for simulation
-        cntr: controller to be used
+    Run the control simulation, plot the trajectories and relevant data
+    Inputs:
+        - z0: concatenated state of all agents
+        - u0: concatenated control of all agents
+        - lmbd: list of conformal parameters
+        - t: array of time points
+        - d: list of agent goal positions
+        - obs: list of obstacles
+        - agent_mdl: agent parameters
+        - obs_mdl: obsctacle parameters
+        - zeta_a: conformal factor function for agents
+        - eta_a: conformal exponential function for agents
+        - zeta_o: conformal factor function for obstacles
+        - eta_o: conformal exponential function for obstacles
+        - xi: weight function applied to slack
     '''
     nb_steps = len(t)
     N = len(z0) // 4 
     r_agent = agent_mdl['r']
     M = len(obs)
 
-    '''These vectors will store the state variables of the vehicle'''
+    # These vectors will store the state variables of the vehicle
     x = np.array([])
     y = np.array([])
     vx = np.array([])
@@ -309,7 +388,7 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
     clf = np.array([])
     delta = np.array([0])
 
-    ''' Initialization of x, y, theta, xf, yf'''
+    # Initialization of x, y, vx, vy
     x = np.append(x, [z0[4*i+0] for i in range(N)])
     y = np.append(y, [z0[4*i+1] for i in range(N)])
     vx = np.append(vx, [z0[4*i+2] for i in range(N)])
@@ -319,14 +398,13 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
     clf = np.append(clf, [clf_function(z0, i, d, u0[2*i:2*i+2], sim_mdl['epsilon'], 0) for i in range(N)])
     
 
-    """ setting up the figure """
+    # setting up the figure
     main_ax = plt.gca()
     _, axs = plt.subplots(2, 2)
     #plt.figure()
     
 
-    """This loop solves the ODE for each pair of time points
-    with fixed controller input"""
+    # This loop solves the ODE for each pair of time points with fixed controller input
     last_step = nb_steps - 2
     for s in range(1, nb_steps):
         # The next time interval to compute the solution over
@@ -374,7 +452,7 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
         lmbd = next_lmbd(lmbd, err)
     
 
-    '''Plot initial positions and obstacles'''
+    # Plot initial positions and obstacles
     for i in range(N):
         start_c = plt.Circle((x[i], y[i]), r_agent, fill=False) #to change
         main_ax.add_patch(start_c)
@@ -382,13 +460,12 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
         obs_c = plt.Circle((obs[l][0], obs[l][1]), obs_mdl['r'], fill=True)
         main_ax.add_patch(obs_c)
 
-    '''Plot the trajectories of the agents'''
+    # Plot the trajectories of the agents
     t = np.linspace(0, last_step - 1, last_step)
 
     for i in range(N):
         x_i = [x[N*s+i] for s in range(last_step)]
         y_i = [y[N*s+i] for s in range(last_step)]
-        # plt.plot(x_i, y_i, '-', color='g', linewidth=2)
         lc = colorline(x_i, y_i, last_step, main_ax, cmap='winter')
         
         u_i = [dist([ux[N*s+i],uy[N*s+i]],[0,0]) for s in range(last_step)]
@@ -396,12 +473,11 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
         axs[0,0].title.set_text('Norm(U) of agents')
     plt.colorbar(lc, label='Time steps')
 
-    '''Plot the CBF constraint for agent 1'''
+    # Plot the CBF constraint for agent 1
     for l in range(M):
         h_l = [h_obs[M*s+l] for s in range(last_step)]
         axs[1,0].plot(t, h_l)
         axs[1,0].title.set_text('Obs CBFs of A_1')
-    #plt.colorbar(lc_h, label='Time steps')
     for i in range(N):
         clf_i = [clf[N*s+i] for s in range(last_step)]
         axs[0,1].plot(t, clf_i)
@@ -414,16 +490,15 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
 
 
 
-    '''Plot goal positions'''
+    # Plot goal positions
     for i in range(N):
         corner = [d[i][0] - r_agent, d[i][1] - r_agent]
         side = 2 * r_agent
         main_ax.add_patch(Rectangle(corner, side, side, linewidth=1,
                                edgecolor='r', facecolor='none'))
 
-    '''plot parameters'''
+    # plot parameters
     main_ax.legend(loc='lower right', fontsize='x-large')
-    #main_ax.tick_params(axis='both', labelsize=20)
     name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['learn_rate'])
     #plt.title(name)
     main_ax.set_xlim([-2, 2])
@@ -439,9 +514,7 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
     plt.show()
 
     
-def colorline(
-        x, y, max_t, ax, z=None, cmap='copper',
-        linewidth=3, alpha=1.0):
+def colorline(x, y, max_t, ax, z=None, cmap='copper', linewidth=3, alpha=1.0):
     
     norm = plt.Normalize(0.0, max_t)
 
@@ -466,12 +539,11 @@ def make_segments(x, y):
     return segments
 
 
-''' Setup for runnint the simulation
-    Thorizon: Time horizon for simulation
-    Nsample: number of sample points that will be use to split [0, Thorizon]
-    t will be the array of time points
+''' 
+Setup for running the simulation
+    - Thorizon: time horizon for simulation
+    - t: array of time points
 '''
-
 Thorizon = sim_mdl['max_t'] * sim_mdl['dt']
 t = np.linspace(0, Thorizon, sim_mdl['max_t'])
 
@@ -495,7 +567,7 @@ x_obs_min = - x_lim + r_obs
 x_obs_max = x_lim - r_obs
 obs = []
 
-mode = 'manual' # manual | random
+mode = 'manual' # manual || random
 
 if mode == 'random':
     M = 1
@@ -516,11 +588,11 @@ if mode == 'manual':
     pair = [[1, 0], [-1, 0]]
     trapezoid = [[.67, 1], [-.67, 1], [1.33, -1], [-1.33, -1]]
     diamond = [[0, 1], [0, -1], [1, 0], [-1, 0]]
-    obs = diamond
+    obs = center
     M = len(obs)
 
 '''Walls'''
-walls = [-x_lim, x_lim]
+walls = [('W', -x_lim), ('E' ,x_lim), ('S', y_end - 1), ('N', y_start + 1)]
 
 '''Goal generation'''
 # directly underneath
