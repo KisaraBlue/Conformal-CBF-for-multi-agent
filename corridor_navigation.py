@@ -49,7 +49,6 @@ def agents_model(z, t, u):
         - t: time (unused)
         - u: concatenated control of all agents
     '''
-    # crop u to [-v_max, v_max]^2 ?
     return u
 
 def dist2(a1, a2):
@@ -292,24 +291,26 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
             else:
                 objective = cp.Minimize(cp.norm2(ui) + xi(di) ** 2)
             constraints = [clf_lhs(z, i, d, ui, epsilon, di) <= 0]
+            z_o_i, e_o_i = zeta_o(max(lmbd[i])), eta_o(max(lmbd[i]))
             for idj, j in enumerate(sensed_a[i]):
+                z_a_ij, e_a_ij, z_o_ij, e_o_ij = zeta_a(lmbd[i][j]), eta_a(lmbd[i][j]), zeta_o(lmbd[i][j]), eta_o(lmbd[i][j])
                 constraints.append(clf_lhs(z, j, d, V[idj], epsilon, D[idj]) <= 0)
-                constraints.append(cbf_agents(z, i, j, ui, V[idj], zeta_a(lmbd[i][j]), eta_a(lmbd[i][j]), agent_mdl))
-                constraints.append(cbf_agents(z, j, i, V[idj], ui, 1, 1, agent_mdl))
+                constraints.append(cbf_agents(z, i, j, ui, V[idj], z_a_ij, e_a_ij, agent_mdl))
+                constraints.append(cbf_agents(z, j, i, V[idj], ui, z_a_ij, e_a_ij, agent_mdl))
                 for idk, k in enumerate(sensed_a[i]):
                     if idk != idj and dist(z[2*k:2*k+2], z[2*j:2*j+2]) < r_sense + r_agent:
-                        constraints.append(cbf_agents(z, j, k, V[idj], V[idk], 1, 1, agent_mdl))
+                        constraints.append(cbf_agents(z, j, k, V[idj], V[idk], z_a_ij, e_a_ij, agent_mdl))
                 for l in sensed_o[i]:
                     if dist(z[2*j:2*j+2], obs[l]) < r_sense + r_obs:
-                        constraints.append(cbf_obstacle(z, obs, j, l, V[idj], 1, 1, agent_mdl, obs_mdl))
+                        constraints.append(cbf_obstacle(z, obs, j, l, V[idj], z_o_ij, e_o_ij, agent_mdl, obs_mdl))
                 for l in range(len(walls)):
-                    constraints.append(cbf_wall(z, walls, j, l, V[idj], 1, 1, agent_mdl))
+                    constraints.append(cbf_wall(z, walls, j, l, V[idj], z_o_ij, e_o_ij, agent_mdl))
                 for s in speed_constraints(V[idj], agent_mdl['max_v']):
                     constraints.append(s)
             for l in sensed_o[i]:
-                constraints.append(cbf_obstacle(z, obs, i, l, ui, zeta_o(1), eta_o(1), agent_mdl, obs_mdl))
+                constraints.append(cbf_obstacle(z, obs, i, l, ui, z_o_i, e_o_i, agent_mdl, obs_mdl))
             for l in range(len(walls)):
-                constraints.append(cbf_wall(z, walls, i, l, ui, zeta_o(2), eta_o(1), agent_mdl))
+                constraints.append(cbf_wall(z, walls, i, l, ui, z_o_i, e_o_i, agent_mdl))
             for s in speed_constraints(ui, agent_mdl['max_v']):
                 constraints.append(s)
             problem = cp.Problem(objective, constraints)
@@ -326,7 +327,7 @@ def qp_controller(z, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zet
                 u.append(None)
                 slack.append(None)
 
-    return u, slack, sensed_a
+    return u, slack, sensed_a, sensed_o
 
 
 def soft_positive_linear(x):
@@ -342,11 +343,16 @@ def next_lmbd(lmbd, err):
         - list of conformal parameters
         - list of errors detected
     '''
+    N = len(lmbd)
     eta = sim_mdl['learn_rate']
     eps = sim_mdl['err_rate']
-    return [lmbd[i] + eta * (eps - err[i]) for i in range(len(lmbd))]
+    next_lmbd = np.zeros((N, N))
+    for i in range(N):
+        for j in range(N):
+            next_lmbd[i][j] = lmbd[i][j] + eta * (eps - err[i][j])
+    return next_lmbd
 
-def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi):
+def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi, learning):
     '''
     Run the control simulation, plot the trajectories and relevant data
     Inputs:
@@ -367,6 +373,7 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
     nb_steps = len(t)
     N = len(z0) // 2 
     r_agent = agent_mdl['r']
+    r_sense = agent_mdl['sense']
     M = len(obs)
 
     # These vectors will store the state variables of the vehicle
@@ -389,22 +396,24 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
 
     # setting up the figure
     main_ax = plt.gca()
+    name = learning + '| dt:' + str(sim_mdl['dt']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['learn_rate'])
+    plt.title(name)
     _, axs = plt.subplots(2, 2)
     #plt.figure()
     
 
     # This loop solves the ODE for each pair of time points with fixed controller input
     last_step = nb_steps - 2
+    collision = False
     for s in range(1, nb_steps):
         # The next time interval to compute the solution over
         tspan = [t[s - 1], t[s]]
 
         # next controller input
-        next_u, next_delta, sensed_a = qp_controller(z0, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi)
+        next_u, next_delta, sensed_a, sensed_o = qp_controller(z0, obs, walls, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi)
         for ui in next_u:
             if ui == None:
                 print("Can't continue loop")
-                print("Step: ", s)
                 u0 = None
                 break
         if u0 == None:
@@ -433,12 +442,37 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
         err = np.zeros((N, N))
         for i in range(N):
             for j in sensed_a[i]:
-                # conformal adaptation turned off for now
-                break
-                if not cbf_agents(z0, i, j, u0[2*i:2*i+2], zeta_a(lmbd[i]), eta_a(lmbd[i]), agent_mdl):
-                    err[i] = 1
-                    break  
-        lmbd = next_lmbd(lmbd, err)
+                if dist(z0[2*j:2*j+2], z0[2*i:2*i+2]) < 2 * r_agent:
+                    collision = True
+                    unsafe_pair = (i, j)
+                z_a_ij, e_a_ij, z_o_ij, e_o_ij = zeta_a(lmbd[i][j]), eta_a(lmbd[i][j]), zeta_o(lmbd[i][j]), eta_o(lmbd[i][j])
+                if not cbf_agents(z0, j, i, u0[2*j:2*j+2], u0[2*i:2*i+2], z_a_ij, e_a_ij, agent_mdl):
+                    err[i][j] = 1
+                else:
+                    for k in sensed_a[i]:
+                        if k != j and dist(z0[2*k:2*k+2], z0[2*j:2*j+2]) < r_sense + r_agent:
+                            if not cbf_agents(z0, j, k, u0[2*j:2*j+2], u0[2*k:2*k+2], z_a_ij, e_a_ij, agent_mdl):
+                                err[i][j] = 1
+                                break
+                    if err[i][j] == 0:
+                        for l in sensed_o[i]:
+                            if dist(z0[2*j:2*j+2], obs[l]) < r_sense + r_obs:
+                                if not cbf_obstacle(z0, obs, j, l, u0[2*j:2*j+2], z_o_ij, e_o_ij, agent_mdl, obs_mdl):
+                                    err[i][j] = 1
+                                    break
+                    if err[i][j] == 0:
+                        for l in range(len(walls)):
+                            if not cbf_wall(z0, walls, j, l, u0[2*j:2*j+2], z_o_ij, e_o_ij, agent_mdl):
+                                    err[i][j] = 1
+                                    break
+        if learning == 'all_conformal':
+            lmbd = next_lmbd(lmbd, err)
+
+        if collision:
+            pass
+            # last_step = s - 1
+            # break
+        
     
 
     # Plot initial positions and obstacles
@@ -491,8 +525,6 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
 
     # plot parameters
     main_ax.legend(loc='lower right', fontsize='x-large')
-    name = 'max_t:' + str(sim_mdl['max_t']) + ' | dt:' + str(sim_mdl['dt']) + ' | eps:' + str(sim_mdl['epsilon']) + ' | err_rate:' + str(sim_mdl['err_rate']) + ' | learn_rate:' + str(sim_mdl['learn_rate'])
-    #plt.title(name)
     main_ax.set_xlim([-2, 2])
     plt.xticks(fontsize=9)
     main_ax.set_ylim([-4, 4])
@@ -500,8 +532,10 @@ def path_control(z0, u0, lmbd, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta
 
     main_ax.set_aspect('equal', adjustable='box')
 
-    print("Length of path:", len(x))
     print("Last setp:", s)
+    if collision:
+        i, j = unsafe_pair
+        print(f"Collision between agents {i} and {j}.")
     
     plt.show()
 
@@ -540,7 +574,7 @@ Thorizon = sim_mdl['max_t'] * sim_mdl['dt']
 t = np.linspace(0, Thorizon, sim_mdl['max_t'])
 
 '''Initial state and input'''
-N = 2
+N = 4
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
@@ -596,12 +630,14 @@ pass
 # cone
 pass
 
-zeta_a = lambda x: x
-eta_a = lambda _: 1
-zeta_o = lambda x: x
-eta_o = lambda x: x
-xi = lambda delta: 10 * delta
+zeta_a = lambda x: soft_positive_linear(x)
+eta_a = lambda x: 2 * np.floor(soft_positive_linear(x) / 2) + 1
+zeta_o = lambda x: soft_positive_linear(x)
+eta_o = lambda x: 2 * np.floor(soft_positive_linear(x) / 2) + 1
+xi = lambda delta: 2 * cp.abs(delta)
 
 lmbd0 = np.ones((N,N))
 
-path_control(z0, u0, lmbd0, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi)
+# learning = all_conformal || no_learning
+
+path_control(z0, u0, lmbd0, t, d, obs, walls, agent_mdl, obs_mdl, zeta_a, eta_a, zeta_o, eta_o, xi, 'no_learning')
