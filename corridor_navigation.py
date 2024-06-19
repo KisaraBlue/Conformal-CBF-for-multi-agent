@@ -18,7 +18,7 @@ import cvxpy as cp
     - factor of Lyapunov function in CLF,
     - error rate for agent CBF adptation,
     - learning rate for conformal parameters'''
-sim_mdl = {'max_t': 1400,
+sim_mdl = {'max_t': 500, # ~1400 to reach goal
            'dt': .05,
            'x_lim': 2,
            'y_start': 3,
@@ -217,7 +217,7 @@ def cbf_wall(z, walls, i, l, ui, zeta_o, eta_o, agent_mdl):
     h = h_wall(z, walls, i, l, agent_mdl)
     return 2 * np.matmul(vec_il, ui) + zeta_o * (np.sign(h) * np.abs(h) ** eta_o) >= 0
 
-def edge_sensing_range(z, obs, i, agent_mdl):
+def edge_sensing_range(z, obs, walls, i, agent_mdl):
     '''
     List of agents and obstacles in the sensing range of each agent
     Inputs:
@@ -231,9 +231,11 @@ def edge_sensing_range(z, obs, i, agent_mdl):
     r_sense = agent_mdl['sense']
     M = len(obs)
     r_obs = obs_mdl['r']
+    L = len(walls)
 
     sensed_a = []
     sensed_o = []
+    sensed_w = []
     
     for j in range(N):
         if j != i and dist(z[2*i:2*i+2], z[2*j:2*j+2]) < r_sense + r_agent:
@@ -241,8 +243,24 @@ def edge_sensing_range(z, obs, i, agent_mdl):
     for l in range(M):
         if dist(z[2*i:2*i+2], obs[l]) < r_sense + r_obs:
             sensed_o.append(l)
-    
-    return sensed_a, sensed_o
+    for k in range(L):
+        dir = walls[k][0]
+        if dir == 'W' or dir == 'E':
+            cy = z[2*i+1]
+            if dir == 'W':
+                cx = walls[l][1] + agent_mdl['r']
+            else:
+                cx = walls[l][1] - agent_mdl['r']
+        else:
+            cx = z[2*i]
+            if dir == 'S':
+                cy = walls[l][1] + agent_mdl['r']
+            else:
+                cy = walls[l][1] - agent_mdl['r']
+        if dist(z[2*i:2*i+2], [cx, cy]) < r_sense:
+            sensed_w.append(k)
+
+    return sensed_a, sensed_o, sensed_w
 
 def speed_constraints(ui, max_velocity):
     '''
@@ -273,7 +291,7 @@ def conservative_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, 
         - xi: weight function applied to slack
     '''
 
-    sensed_a, sensed_o = edge_sensing_range(z, obs, i, agent_mdl)
+    sensed_a, sensed_o, sensed_w = edge_sensing_range(z, obs, walls, i, agent_mdl)
 
     u = [None, None]
     slack = None
@@ -298,8 +316,8 @@ def conservative_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, 
             
         for l in sensed_o:
             constraints.append(cbf_obstacle(z, obs, i, l, ui, z_o_i, e_o_i, agent_mdl, obs_mdl))
-        for l in range(len(walls)):
-            constraints.append(cbf_wall(z, walls, i, l, ui, z_o_i, e_o_i, agent_mdl))
+        for k in sensed_w:
+            constraints.append(cbf_wall(z, walls, i, k, ui, z_o_i, e_o_i, agent_mdl))
         for s in speed_constraints(ui, agent_mdl['max_v']):
             constraints.append(s)
         problem = cp.Problem(objective, constraints)
@@ -335,7 +353,7 @@ def conformal_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta
     '''
     
     prdct, agent_type, tspan = opt
-    sensed_a, sensed_o = edge_sensing_range(z, obs, i, agent_mdl)
+    sensed_a, sensed_o, sensed_w = edge_sensing_range(z, obs, i, agent_mdl)
 
     u = [None, None]
     slack = None
@@ -365,8 +383,9 @@ def conformal_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta
             
         for l in sensed_o:
             constraints.append(cbf_obstacle(z, obs, i, l, ui, z_o_i, e_o_i, agent_mdl, obs_mdl))
-        for l in range(len(walls)):
-            constraints.append(cbf_wall(z, walls, i, l, ui, z_o_i, e_o_i, agent_mdl))
+        # introduce sensed walls
+        for k in sensed_w:
+            constraints.append(cbf_wall(z, walls, i, k, ui, z_o_i, e_o_i, agent_mdl))
         for s in speed_constraints(ui, agent_mdl['max_v']):
             constraints.append(s)
         problem = cp.Problem(objective, constraints)
@@ -401,7 +420,7 @@ def agressive_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta
         - xi: weight function applied to slack
     '''
     
-    sensed_a, sensed_o = edge_sensing_range(z, obs, i, agent_mdl)
+    sensed_a, sensed_o, sensed_w = edge_sensing_range(z, obs, i, agent_mdl)
 
     u = [None, None]
     slack = None
@@ -425,8 +444,8 @@ def agressive_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta
             
         for l in sensed_o:
             constraints.append(cbf_obstacle(z, obs, i, l, ui, z_o_i, e_o_i, agent_mdl, obs_mdl))
-        for l in range(len(walls)):
-            constraints.append(cbf_wall(z, walls, i, l, ui, z_o_i, e_o_i, agent_mdl))
+        for k in sensed_w:
+            constraints.append(cbf_wall(z, walls, i, k, ui, z_o_i, e_o_i, agent_mdl))
         for s in speed_constraints(ui, agent_mdl['max_v']):
             constraints.append(s)
         problem = cp.Problem(objective, constraints)
@@ -460,7 +479,7 @@ def very_agressive_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a
         - xi: weight function applied to slack
     '''
     
-    _, sensed_o = edge_sensing_range(z, obs, i, agent_mdl)
+    _, sensed_o, sensed_w = edge_sensing_range(z, obs, i, agent_mdl)
 
     u = [None, None]
     slack = None
@@ -480,8 +499,8 @@ def very_agressive_control(z, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a
         z_o_i, e_o_i = zeta_o(lmbd[i]), eta_o(lmbd[i])
         for l in sensed_o:
             constraints.append(cbf_obstacle(z, obs, i, l, ui, z_o_i, e_o_i, agent_mdl, obs_mdl))
-        for l in range(len(walls)):
-            constraints.append(cbf_wall(z, walls, i, l, ui, z_o_i, e_o_i, agent_mdl))
+        for k in sensed_w:
+            constraints.append(cbf_wall(z, walls, i, k, ui, z_o_i, e_o_i, agent_mdl))
         for s in speed_constraints(ui, agent_mdl['max_v']):
             constraints.append(s)
         problem = cp.Problem(objective, constraints)
@@ -572,6 +591,7 @@ def path_control(z0, u0, lmbd, controllers, agent_type, t, d, obs, walls, agent_
     h_obs = np.array([])
     clf = np.array([])
     delta = np.array([0])
+    lambda_ego = np.array([])
 
     # Initialization of x, y
     x = np.append(x, [z0[2*i+0] for i in range(N)])
@@ -589,7 +609,7 @@ def path_control(z0, u0, lmbd, controllers, agent_type, t, d, obs, walls, agent_
     
 
     # This loop solves the ODE for each pair of time points with fixed controller input
-    last_step = nb_steps - 2
+    last_step = nb_steps - 1
     collision = False
     for s in range(1, nb_steps):
         # The next time interval to compute the solution over
@@ -602,7 +622,7 @@ def path_control(z0, u0, lmbd, controllers, agent_type, t, d, obs, walls, agent_
             next_u_i, next_delta_i = controllers[agent_type[i]](z0, obs, walls, i, agent_mdl, obs_mdl, d, lmbd, zeta_a, eta_a, zeta_o, eta_o, xi, opt=(auto_predictor, agent_type, tspan))
             
             if next_delta_i == None:
-                print("Can't continue loop")
+                print(f"Can't continue loop because of agent {i}")
                 u0 = None
                 last_step = s - 1
                 break
@@ -624,17 +644,20 @@ def path_control(z0, u0, lmbd, controllers, agent_type, t, d, obs, walls, agent_
         x = np.append(x, [z[1][2*i+0] for i in range(N)])
         y = np.append(y, [z[1][2*i+1] for i in range(N)])
 
-        h_obs = np.append(h_obs, [h_obstacle(z[1], obs, 0, l, agent_mdl, obs_mdl) for l in range(M)])
+        # CBFs for conformal agent
+        h_obs = np.append(h_obs, [h_obstacle(z[1], obs, 1, l, agent_mdl, obs_mdl) for l in range(M)])
 
         clf = np.append(clf, [clf_lhs(z[1], i, d, u0[2*i:2*i+2], sim_mdl['epsilon'], next_delta[i]) for i in range(N)])
 
         delta = np.append(delta, next_delta)
+
+        lambda_ego = np.append(lmbd[N // 2], lambda_ego)
     
         # next conformal parameters
         err = np.zeros(N)
         for i in range(N):
             if agent_type[i] == 1: # conformal agent
-                sensed_a, _ = edge_sensing_range(z0, obs, i, agent_mdl)
+                sensed_a, _, _ = edge_sensing_range(z0, obs, i, agent_mdl)
                 for j in sensed_a:
                     if dist(z[1][2*j:2*j+2], z[1][2*i:2*i+2]) < 2 * r_agent:
                         collision = True
@@ -679,19 +702,25 @@ def path_control(z0, u0, lmbd, controllers, agent_type, t, d, obs, walls, agent_
         axs[0,0].title.set_text('U of agents')
     plt.colorbar(lc, label='Time steps')
 
-    # Plot the CBF constraint for agent 1
+    # Plot the CBF constraints for conformal agent (idx: N // 2)
     for l in range(M):
         h_l = [h_obs[M*s+l] for s in range(last_step)]
         axs[1,0].plot(t, h_l)
         axs[1,0].title.set_text('Obs CBFs of A_1')
-    for i in range(N):
-        clf_i = [clf[N*s+i] for s in range(last_step)]
-        axs[0,1].plot(t, clf_i)
-        axs[0,1].title.set_text('CLF of A_1')
-    for i in range(N):
-        delta_i = [delta[N*s+i] for s in range(last_step)]
-        axs[1,1].plot(t, delta_i)
-        axs[1,1].title.set_text('Delta of A_1')
+    
+    if False:
+        for i in range(N):
+            clf_i = [clf[N*s+i] for s in range(last_step)]
+            axs[0,1].plot(t, clf_i)
+            axs[0,1].title.set_text('CLF of A_1')
+        for i in range(N):
+            delta_i = [delta[N*s+i] for s in range(last_step)]
+            axs[1,1].plot(t, delta_i)
+            axs[1,1].title.set_text('Delta of A_1')
+
+    # lambda, eta, zeta
+    axs[1,1].plot(t, lambda_ego)
+    axs[1,1].title.set_text('Lambda of conformal agent')
     
 
 
@@ -754,7 +783,7 @@ Thorizon = sim_mdl['max_t'] * sim_mdl['dt']
 t = np.linspace(0, Thorizon, sim_mdl['max_t'])
 
 '''Initial state and input'''
-N = 3
+N = 5
 x_lim = sim_mdl['x_lim']
 y_start = sim_mdl['y_start']
 y_end = sim_mdl['y_end']
@@ -764,13 +793,8 @@ z0 = [x for i in range(N) for x in [x_start[i], y_start]]
 u0 = [0 for _ in range(2 * N)]
 
 # strategies: conservative (0) || learning (1) || agressive (2) || very_agressive (2)
-lmbd0 = np.ones(N)
+start_lmbds = [- np.log(np.exp(2) - 1), - np.log(np.exp(1) - 1), 0, - np.log(np.exp(.25) - 1)]
 ego_idx = N // 2
-
-lmbd_learning_start = - np.log(np.exp(1) - 1)
-lmbd_conservative = - np.log(np.exp(2) - 1)
-lmbd_agressive = 0
-lmbd_v_agressive = - np.log(np.exp(.25) - 1)
 
 # experiments
 all_conservative = np.zeros(N, dtype=int)
@@ -800,6 +824,7 @@ controllers = [conservative_control, conformal_control, agressive_control, very_
 # Current Experiment
 agent_type = adapt_vs_mix_CA
 experiment_name = 'adapt_vs_mix_CA'
+lmbd0 = [start_lmbds[agent_type[i]] for i in range(N)]
 
 
 '''Obstacle generation'''
@@ -832,11 +857,11 @@ if mode == 'manual':
     pair = [[1, 0], [-1, 0]]
     trapezoid = [[.67, 1], [-.67, 1], [1.33, -1], [-1.33, -1]]
     diamond = [[0, 1], [0, -1], [1, 0], [-1, 0]]
-    obs = trapezoid
+    obs = diamond
     M = len(obs)
 
 '''Walls'''
-walls = [('W', -x_lim), ('E' ,x_lim), ('S', y_end - 1), ('N', y_start + 1)]
+walls = [('W', -x_lim), ('E', x_lim), ('S', y_end - 1), ('N', y_start + 1)]
 
 '''Goal generation'''
 # directly underneath
