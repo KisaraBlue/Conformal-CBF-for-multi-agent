@@ -80,7 +80,7 @@ def plan_trajectory(df, params):
             # period of the sensor's sampling of trajectories: tau (tau)
             # constant for the linear alpha function: a (planner.alpha)
         planner.alphat, tau, planner.alpha, loss_type = params['conformal_CBF_params']
-        solve_rate, dynamics_type = 5, 'double_integral' # lin_ang__vel or double_integral
+        solve_rate, dynamics_type = 16, 'double_integral' # lin_ang__vel or double_integral
         ref_cntrl = 'spline'
         planner.collide_dist = (params['human_size'] + params['robot_size']) * params['px_per_m']
         df = df[df.ahead <= tau]
@@ -101,15 +101,16 @@ def plan_trajectory(df, params):
             #reference = run_rrt(rrt_scenario, search_area, envname)
         time_step = 0
 
-        avg_ref, avg_G, avg_h, safe_vs, constr_vs, avg_lmbd, losses, unsat_frames, nb_safe_u_ref, nb_conservative_pred, nb_both_true_but_0_loss, count_invis = 0, np.zeros(2), 0, [], [], 0, [], [], 0, 0, 0, 0
+        avg_ref, avg_A, avg_b, safe_vs, constr_vs, avg_lmbd, losses, unsat_frames, nb_safe_u_ref, nb_conservative_pred, nb_both_true_but_0_loss = 0, np.zeros(2), 0, [], [], 0, [], [], 0, 0, 0
         stats_df = []
         
     for frame_idx in tqdm(frames_indices):
         # Check if goal has been reached
         if np.linalg.norm(r_start[:2] - r_goal[:2]) <= params['goal_rad'] and not r_goal_reached:
-            print(f"Goal {j} reached after {frame_idx - init_frame} frames.")
             j += 1
         if j == len(params['r_goal']): # If we've exceeded the number of goals
+            if not r_goal_reached:
+                print(f"Goal {j} reached after {frame_idx - init_frame} frames.")
             r_goal_reached = True
         if not r_goal_reached:
             r_goal = params['r_goal'][j]
@@ -127,17 +128,18 @@ def plan_trajectory(df, params):
                     human_traj_preds[0] = human_pos_gt[:, :2]
                     for t in range(1, tau+1):
                         human_traj_preds[t] = np.stack([
-                            curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
+                            #curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
+                            curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['x', 'y']].to_numpy()
                             for mid in curr_metaIds], axis=0)
                     preds_mid_idx = {curr_metaIds[i]: i for i in range(N)}
                 
                 # Plan
                 for sub_frame in range(solve_rate):
-                    robot_plan, (v_ref, G, h, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(reference, human_init_pos, tau, loss_type, ref_cntrl, frame_idx, dynamics_type, solve_rate, sub_frame))
+                    robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(reference, human_init_pos, tau, loss_type, ref_cntrl, frame_idx, dynamics_type, solve_rate, sub_frame))
                     r_start = [ robot_plan[0][1], robot_plan[1][1], robot_plan[4][1], robot_plan[2][1] ]
                     avg_ref += v_ref
-                    avg_G += G
-                    avg_h += h
+                    avg_A += A
+                    avg_b += b
                     safe_vs.append(safe_v)
                     constr_vs.append(constr_v)
                     avg_lmbd += lmbd
@@ -148,6 +150,7 @@ def plan_trajectory(df, params):
                     nb_both_true_but_0_loss += both_true_but_0_loss
                     if not loss is None:
                         losses.append(loss)
+                    r_start = [ robot_plan[0][1], robot_plan[1][1], robot_plan[4][1], robot_plan[2][1] ]
                 plan_df += [
                     pd.DataFrame({
                         'frame': frame_idx,
@@ -254,12 +257,12 @@ def plan_trajectory(df, params):
     plan_df = pd.concat([df] + plan_df, axis=0, ignore_index=True)
     if params['method'] == 'conformal CBF':
         nb_frames = len(frames_indices)
-        print(f"Average ref vel: {avg_ref / nb_frames}, Average G: {avg_G / nb_frames}, Average h: {avg_h / nb_frames}, Average lambda: {avg_lmbd / nb_frames}, Unsatisfiable QP: {unsat_frames}")
+        print(f"Average ref vel: {avg_ref / nb_frames}, Average A: {avg_A / nb_frames}, Average b: {avg_b / nb_frames}, Average lambda: {avg_lmbd / nb_frames}, Unsatisfiable QP: {unsat_frames}")
         safe_vs, constr_vs = np.array(safe_vs), np.array(constr_vs)
         losses = np.array(losses)
         print(f"Safety violations:\nMin: {np.min(safe_vs)}, Avg: {np.average(safe_vs)}, Max: {np.max(safe_vs)}")
         print(f"Steps of violation: {np.nonzero(safe_vs) + init_frame}")
-        print(f"Number of agents that weren't seen: {count_invis}")
+        #print(f"Number of agents that weren't seen: {count_invis}")
         print(f"Predicted constraint violations:\nMin: {np.min(constr_vs)}, Avg: {np.average(constr_vs)}, Max: {np.max(constr_vs)}")
         print(f"Loss stats:\nMin: {np.min(losses)}, Avg: {np.average(losses)}, Max: {np.max(losses)}")
         print(f"Reference cntrl was safe: {nb_safe_u_ref}, Prediction was too conservative: {nb_conservative_pred}, Both happened but positive loss: {nb_both_true_but_0_loss}")
