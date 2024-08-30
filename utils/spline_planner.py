@@ -223,10 +223,10 @@ def conformal_CBF_constraint(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist)
 def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, rho_0, K_rep, K_acc):
     '''RHS of the QP constraint for potential field based controller'''
     dh_i = h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep)
-    q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
+    #q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
     pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
     alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
-    return q_i_const + pred_q_j + alpha_h# + lmbd
+    return pred_q_j + alpha_h# + lmbd
 
 def approx_conformal_CBF_constraint(X_i, X_j, next_X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, dt):
     # todo: factor this code, avoid redundant computation
