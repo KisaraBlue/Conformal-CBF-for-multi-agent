@@ -172,12 +172,16 @@ def nabla_U_rep(X_i, X_obs, D_obs, rho_0, K_rep):
 # delta is a small constant, chosen to be 1/16 here
 def h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep):
     '''Control barrier function for potential field based controller'''
-    return 1 / (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep)) - 1 / 6
+    return 1 / (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep)) - 1 / 2
 
 def h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep):
     '''Gradient of the CBF for potential field based controller'''
     #rho_X_i = rho_obs(X_i, X_j, collide_dist)
     #nabla_h = - (K_rep * (1/rho_X_i - 1/rho_0)) / (rho_X_i * (rho_X_i * (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep))) ** 2) * (X_i[:2] - X_j)
+    '''rho_X_i = rho_obs(X_i, X_j, 0)
+    if rho_X_i < rho_0:
+        print("Nabla U_rep: ", nabla_U_rep(X_i, X_j, collide_dist, rho_0, K_rep))
+        print("U_rep: ", U_rep(X_i, X_j, collide_dist, rho_0, K_rep))'''
     return - nabla_U_rep(X_i, X_j, collide_dist, rho_0, K_rep) / (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep)) ** 2
 
 def agent_avoid(X_i, X_j, collide_dist):
@@ -226,7 +230,7 @@ def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_di
     #q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
     pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
     alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
-    return pred_q_j + alpha_h# + lmbd
+    return alpha_h + pred_q_j# + lmbd
 
 def approx_conformal_CBF_constraint(X_i, X_j, next_X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, dt):
     # todo: factor this code, avoid redundant computation
@@ -407,9 +411,9 @@ def cartesian_to_polar(X_i):
     v = X_i[2:]
     return np.array([X_i[0], X_i[1], angle_between([1, 0], v), np.linalg.norm(v)])
 
-def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_linear_vel_, max_angular_vel_, lamda, alpha, epsilon, prev_state, collide_dist, conformal_CBF_args):
+def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_linear_vel_, max_angular_vel_, lamda, alpha, _, prev_state, collide_dist, conformal_CBF_args):
     # Prepare data
-    ref_object, human_init, tau, loss_type, _, frame_idx, dynamics_type, solve_rate, sub_frame = conformal_CBF_args
+    ref_object, human_init, tau, loss_type, _, frame_idx, dynamics_type, solve_rate, sub_frame, dist_to_goal = conformal_CBF_args
     curr_next_preds, time_step, N, c_pred_mid_idx, current_gt = human_data
     preds_at_last_tau = curr_next_preds[time_step]
     pred_diff = (1 / solve_rate) * (curr_next_preds[time_step + 1] - preds_at_last_tau)
@@ -420,10 +424,10 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
     start_pos = start[:2]
     start_dir = ang_to_unit_vec(start[2])
     dt = horizon_ / (num_waypts_ - 1)
-    alpha_func = alpha
+    alpha_func = lambda x: x * .00001
     score_func = arctan_score_func
     sub_dt = dt / solve_rate
-    K_acc, K_rep, K_att, sensory_radius = .05, 20, .05, 20
+    K_acc, K_rep, K_att, rho_0 = 1, 1, 1, 1 + dist_to_goal
     
     '''# Reference control
     if ref_type == 'spline':
@@ -433,6 +437,7 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
 
     # QP problem
     dXdt_pred = np.array(pred_diff) / dt
+    #print(f"Max pedestrian speed: {np.max(np.abs(dXdt_pred))}")
     if dynamics_type == 'lin_ang__vel':
         A, b = linear_inequalities_QP(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist)
         lb = np.array([[0], [-max_angular_vel_]])
@@ -441,8 +446,9 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
         qp = solve_ls(np.eye(2), u_ref, G=A, h=b, lb=lb, ub=ub, solver="daqp", verbose=True)
     else:
         start = polar_to_cartesian(start)
-        A, b = linear_inequalities_QP_DI(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist, sensory_radius, K_rep, K_acc)
-        #A, b = linear_inequalities_QP_DI(N, current_gt, dXdt_pred, start, lamda, alpha_func, collide_dist, sensory_radius, K_rep, K_acc)
+        A, b = linear_inequalities_QP_DI(N, current_pred, dXdt_pred, start, lamda, alpha_func, 0, rho_0, K_rep, K_acc)
+
+        #A, b = linear_inequalities_QP_DI(N, current_gt, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc)
         u_ref = v_des(start, goal[:2], K_att, max_linear_vel_)
         lb = np.array([[-max_linear_vel_], [-max_linear_vel_]])
         ub = np.array([[max_linear_vel_], [max_linear_vel_]])
@@ -472,9 +478,10 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
         next_pos = np.clip(next_X_i[:2], gmin, gmax)
         next_X_i = np.append(next_pos, [next_X_i[2]])
     else:
-        u_acc = - K_acc * (start[2:] - u_qp)
-        next_traj = ode_solver(start, u_acc, sub_dt)
-        next_X_i = next_traj[-1]
+        '''u_acc = - K_acc * (start[2:] - u_qp)
+        next_traj = ode_solver(start, u_acc, sub_dt)'''
+        next_traj = odeint(lambda X, t, v: v, start[:2], np.linspace(0, sub_dt, 4), args=(u_qp,))
+        next_X_i = np.append(next_traj[-1], u_qp)
 
 
     '''if not unsat_qp:
@@ -530,11 +537,11 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
                         if dynamics_type == 'lin_ang__vel':
                             p_A_gt, p_b_gt = linear_inequalities_QP(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
                         else:
-                            p_A_gt, p_b_gt = linear_inequalities_QP_DI(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, sensory_radius, K_rep, K_acc)
+                            p_A_gt, p_b_gt = linear_inequalities_QP_DI(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep, K_acc)
                         p_CBF_gt = p_b_gt - np.matmul(p_A_gt, p_u_qp)
                         p_start_pos = p_start[:2]
                         for idx, mid in enumerate(p_dXdt_gt_mids):
-                            record_CBF.append((t, mid, p_CBF_gt[idx], np.linalg.norm(p_start_pos - loss_p_gt[idx]) - collide_dist))
+                            record_CBF.append((t, mid, p_CBF_gt[idx], np.linalg.norm(p_start_pos - loss_p_gt[idx]) - collide_dist, h_potential_field(p_start, loss_p_gt[idx], collide_dist, rho_0, K_rep), np.linalg.norm(h_potential_field_deriv(start, loss_p_gt[idx], collide_dist, rho_0, K_rep)), np.linalg.norm(p_u_ref), np.linalg.norm(p_u_qp)))
                         qp_gt_loss = max(qp_gt_loss, control_loss(score_func, p_u_qp, p_A_gt, p_b_gt, p_QP_score))
                         p_ref_lambda_loss, u_ref_is_safe, pred_is_over_conservative = conservativeness_loss(score_func, p_u_qp, p_u_ref, p_A_gt, p_b_gt, p_A, p_b)
                         ref_lambda_loss = min(ref_lambda_loss, p_ref_lambda_loss)
