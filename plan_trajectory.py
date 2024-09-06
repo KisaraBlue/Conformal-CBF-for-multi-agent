@@ -100,9 +100,11 @@ def plan_trajectory(df, params):
             envname = ''
             #reference = run_rrt(rrt_scenario, search_area, envname)
         time_step = 0
+        dist_to_goal = np.linalg.norm(r_goal[:2] - r_start[:2])
 
         avg_ref, avg_A, avg_b, safe_vs, constr_vs, avg_lmbd, losses, unsat_frames, nb_safe_u_ref, nb_conservative_pred, nb_both_true_but_0_loss = 0, np.zeros(2), 0, [], [], 0, [], [], 0, 0, 0
         stats_df = []
+        #static_pedestrian = np.array([[]])
         
     for frame_idx in tqdm(frames_indices):
         # Check if goal has been reached
@@ -127,16 +129,23 @@ def plan_trajectory(df, params):
                     human_traj_preds = np.empty((tau + 1, N, 2))
                     human_traj_preds[0] = human_pos_gt[:, :2]
                     for t in range(1, tau+1):
-                        human_traj_preds[t] = np.stack([
-                            #curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
-                            curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['x', 'y']].to_numpy()
-                            for mid in curr_metaIds], axis=0)
+                        '''human_traj_preds[t] = np.stack([
+                            curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
+                            for mid in curr_metaIds], axis=0)'''
+                        preds_at_t = np.empty((N, 2))
+                        frame_ahead = frame_idx + t
+                        for idx in range(N):
+                            mid = curr_metaIds[idx]
+                            if ((df.metaId == mid) & (df.frame == frame_ahead)).any():
+                                preds_at_t[idx] = df[(df.metaId == mid) & (df.frame == frame_ahead)].iloc[0].loc[['x', 'y']].to_numpy()
+                            else:
+                                preds_at_t[idx] = human_traj_preds[t-1, idx]
+                        human_traj_preds[t] = preds_at_t
                     preds_mid_idx = {curr_metaIds[i]: i for i in range(N)}
                 
                 # Plan
                 for sub_frame in range(solve_rate):
-                    robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(reference, human_init_pos, tau, loss_type, ref_cntrl, frame_idx, dynamics_type, solve_rate, sub_frame))
-                    r_start = [ robot_plan[0][1], robot_plan[1][1], robot_plan[4][1], robot_plan[2][1] ]
+                    robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(reference, human_init_pos, tau, loss_type, ref_cntrl, frame_idx, dynamics_type, solve_rate, sub_frame, dist_to_goal))
                     avg_ref += v_ref
                     avg_A += A
                     avg_b += b
@@ -151,6 +160,20 @@ def plan_trajectory(df, params):
                     if not loss is None:
                         losses.append(loss)
                     r_start = [ robot_plan[0][1], robot_plan[1][1], robot_plan[4][1], robot_plan[2][1] ]
+                    for record in record_CBF:
+                        t, mid, value, dist, h, grad_h, u_ref, u_qp = record
+                        stats_df += [
+                            pd.DataFrame({
+                                'frame': frame_idx - tau + t / solve_rate,
+                                'metaID': [mid],
+                                'h_dot_alpha_h': value,
+                                'distance': dist,
+                                'cbf_func': h,
+                                'grad_cbf': grad_h,
+                                'u_ref': u_ref,
+                                'u_qp': u_qp
+                            })
+                        ]
                 plan_df += [
                     pd.DataFrame({
                         'frame': frame_idx,
@@ -163,27 +186,30 @@ def plan_trajectory(df, params):
                         'r_goal_count': j,
                         'lambda' : planner.lamda,
                         'alphat' : planner.alphat,
-                        'metaId': -1
+                        'metaId': -1,
+                        'ref_vel': v_ref
                     })
                 ]
-                for record in record_CBF:
-                    t, mid, value, dist = record
+                '''if dynamics_type == 'double_integral':
                     stats_df += [
                         pd.DataFrame({
-                            'frame': frame_idx - tau + t / solve_rate,
-                            'metaID': [mid],
-                            'h_dot_alpha_h': value,
-                            'distance': dist
+                            'frame': frame_idx,
+                            'metaID': [-1],
+                            'h_dot_alpha_h': 0,
+                            'distance': 0,
+                            'linear_vel': robot_plan[2][1],
+                            'angular_vel': robot_plan[3][1]
                         })
-                    ]
-                stats_df += [
-                    pd.DataFrame({
-                        'frame': frame_idx,
-                        'metaID': [-1],
-                        'linear_vel': robot_plan[2][1],
-                        'angular_vel': robot_plan[3][1]
-                    })
-                    ]
+                        ]
+                else:
+                    stats_df += [
+                        pd.DataFrame({
+                            'frame': frame_idx,
+                            'metaID': [-1],
+                            'ref_vel': v_ref,
+                            'angular_vel': robot_plan[3][1]
+                        })
+                        ]'''
 
                 # Take next step
                 time_step = (time_step + 1) % tau
