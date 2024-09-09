@@ -167,7 +167,7 @@ def nabla_U_rep(X_i, X_obs, D_obs, rho_0, K_rep):
     rho_X_i = rho_obs(X_i, X_obs, D_obs)
     if rho_X_i > rho_0:
         return np.zeros(2)
-    return K_rep * (1/rho_X_i - 1/rho_0) * (X_i[:2] - X_obs) / rho_X_i ** 3
+    return K_rep * (1/rho_X_i - 1/rho_0) * (X_obs - X_i[:2]) / rho_X_i ** 3
 
 # delta is a small constant, chosen to be 1/16 here
 def h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep):
@@ -178,10 +178,6 @@ def h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep):
     '''Gradient of the CBF for potential field based controller'''
     #rho_X_i = rho_obs(X_i, X_j, collide_dist)
     #nabla_h = - (K_rep * (1/rho_X_i - 1/rho_0)) / (rho_X_i * (rho_X_i * (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep))) ** 2) * (X_i[:2] - X_j)
-    '''rho_X_i = rho_obs(X_i, X_j, 0)
-    if rho_X_i < rho_0:
-        print("Nabla U_rep: ", nabla_U_rep(X_i, X_j, collide_dist, rho_0, K_rep))
-        print("U_rep: ", U_rep(X_i, X_j, collide_dist, rho_0, K_rep))'''
     return - nabla_U_rep(X_i, X_j, collide_dist, rho_0, K_rep) / (1 + U_rep(X_i, X_j, collide_dist, rho_0, K_rep)) ** 2
 
 def agent_avoid(X_i, X_j, collide_dist):
@@ -230,7 +226,7 @@ def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_di
     #q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
     pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
     alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
-    return alpha_h + pred_q_j# + lmbd
+    return alpha_h + pred_q_j - .1# + lmbd 
 
 def approx_conformal_CBF_constraint(X_i, X_j, next_X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, dt):
     # todo: factor this code, avoid redundant computation
@@ -424,10 +420,10 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
     start_pos = start[:2]
     start_dir = ang_to_unit_vec(start[2])
     dt = horizon_ / (num_waypts_ - 1)
-    alpha_func = lambda x: x * .00001
+    alpha_func = lambda x: x * 10
     score_func = arctan_score_func
     sub_dt = dt / solve_rate
-    K_acc, K_rep, K_att, rho_0 = 1, 1, 1, 1 + dist_to_goal
+    K_acc, K_rep, K_att, rho_0 = 1, 50, 1, 1 + dist_to_goal
     
     '''# Reference control
     if ref_type == 'spline':
@@ -437,7 +433,6 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
 
     # QP problem
     dXdt_pred = np.array(pred_diff) / dt
-    #print(f"Max pedestrian speed: {np.max(np.abs(dXdt_pred))}")
     if dynamics_type == 'lin_ang__vel':
         A, b = linear_inequalities_QP(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist)
         lb = np.array([[0], [-max_angular_vel_]])
@@ -446,31 +441,19 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
         qp = solve_ls(np.eye(2), u_ref, G=A, h=b, lb=lb, ub=ub, solver="daqp", verbose=True)
     else:
         start = polar_to_cartesian(start)
-        A, b = linear_inequalities_QP_DI(N, current_pred, dXdt_pred, start, lamda, alpha_func, 0, rho_0, K_rep, K_acc)
+        A, b = linear_inequalities_QP_DI(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc)
 
         #A, b = linear_inequalities_QP_DI(N, current_gt, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc)
         u_ref = v_des(start, goal[:2], K_att, max_linear_vel_)
         lb = np.array([[-max_linear_vel_], [-max_linear_vel_]])
         ub = np.array([[max_linear_vel_], [max_linear_vel_]])
-        qp = solve_ls(np.eye(2), u_ref, G=A, h=b, lb=lb, ub=ub, solver="daqp", verbose=True)
+        #
+        qp = solve_ls(np.eye(2), u_ref, lb=lb, ub=ub, G=A, h=b, solver="daqp", verbose=True)
     unsat_qp = qp is None
     if unsat_qp:
         u_qp = np.array([0, 0])
     else:
         u_qp = qp
-
-        '''u_ref = -U_att_deriv(start, goal[:2], 1)
-        qp = solve_ls(np.eye(2), u_ref, G=A, h=b, solver="daqp")'''
-    
-        '''b_minus_Au = b - np.matmul(A, u_qp)
-        if np.any([b_minus_Au[j] < -0.001 for j in range(len(b))]) :
-            print(A)
-            print(b)
-            print(np.matmul(A, u_qp))
-            print(b - np.matmul(A, u_qp))
-            
-            print(f"QP problem at {frame_idx} returns negative values (should not happen), qp is {qp} and h_dot_+_alpha_h:\n{b_minus_Au}")
-            exit(0)'''
 
     # Compute next position and loss
     if dynamics_type == 'lin_ang__vel':
@@ -483,16 +466,6 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
         next_traj = odeint(lambda X, t, v: v, start[:2], np.linspace(0, sub_dt, 4), args=(u_qp,))
         next_X_i = np.append(next_traj[-1], u_qp)
 
-
-    '''if not unsat_qp:
-        dist_to_preds = [np.linalg.norm(pos_j - next_pos) for pos_j in current_pred + pred_diff]
-        min_dist = np.min(dist_to_preds)
-        agent = np.argmin(dist_to_preds)
-        if min_dist < collide_dist:
-            print(f"Valid QP movement at {frame_idx} led to collision with predicted next position (should not happen)")
-            print(f"QP control: {u_qp}, h_dot_+_alpha_h: {b - np.matmul(A, u_qp)}, violation: {(collide_dist - min_dist) / collide_dist} with agent {agent}")'''
-
-    
     safe_u_ref_count, conservative_pred_count, both_true_but_0_loss_count = 0, 0, 0
     record_CBF = []
 
@@ -547,7 +520,8 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
                         ref_lambda_loss = min(ref_lambda_loss, p_ref_lambda_loss)
                         safe_u_ref_count += 1 if u_ref_is_safe else 0
                         conservative_pred_count += 1 if pred_is_over_conservative else 0
-                        both_true_but_0_loss_count += 1 if u_ref_is_safe and pred_is_over_conservative and p_ref_lambda_loss == 0 else 0
+                        both_true_but_0_loss_count += 1 if u_ref_is_safe and pred_is_over_conservative else 0
+                        # and p_ref_lambda_loss == 0
                     else:
                         pass
                         #qp_gt_loss = max(qp_gt_loss, 0)
