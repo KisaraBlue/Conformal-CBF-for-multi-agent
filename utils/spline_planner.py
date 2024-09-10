@@ -212,7 +212,7 @@ def approx_agent_avoid_deriv(X_i, X_j, collide_dist, u, dt):
     dh_dth = (agent_avoid(X_i__dth, X_j, collide_dist) - curr_h) / dt
     return np.array([[dh_dx, dh_dy, dh_dth]])
 
-def conformal_CBF_constraint(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist):
+def conformal_CBF_constraint_ang(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist):
     '''RHS of the QP constraint for orientation based controller'''
     # the constant part of q_i is zero because f(X_i)=0 in dynamics
     dh_j = -agent_avoid_deriv(X_i, X_j, collide_dist)
@@ -220,29 +220,22 @@ def conformal_CBF_constraint(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist)
     alpha_h = alpha(agent_avoid(X_i, X_j, collide_dist))
     return pred_q_j + alpha_h + lmbd - .1
 
-def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, rho_0, K_rep, K_acc):
+def conformal_CBF_constraint_vel(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, rho_0, K_rep):
     '''RHS of the QP constraint for potential field based controller'''
     dh_i = h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep)
-    #q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
     pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
     alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
     return alpha_h + pred_q_j - .1# + lmbd 
 
-def approx_conformal_CBF_constraint(X_i, X_j, next_X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, dt):
-    # todo: factor this code, avoid redundant computation
-    X_j__dx = np.array([next_X_j[0], X_j[1]])
-    X_j__dy = np.array([X_j[0], next_X_j[1]])
-    curr_h = agent_avoid(X_i, X_j, collide_dist)
+def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, rho_0, K_rep, K_acc):
+    '''RHS of the QP constraint for potential field based controller'''
+    dh_i = h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep)
+    q_i_const = np.dot(dh_i, f_dynamics_DI(X_i)[:2] - K_acc * np.matmul(g_dynamics_DI(), X_i[2:]))
+    pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
+    alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
+    return alpha_h + pred_q_j + q_i_const - .1# + lmbd 
 
-    dh_dx = (curr_h - agent_avoid(X_i, X_j__dx, collide_dist)) / dt
-    dh_dy = (curr_h - agent_avoid(X_i, X_j__dy, collide_dist)) / dt
-    # the constant part of q_i is zero because f(X_i)=0 in dynamics
-    dh_j = [dh_dx, dh_dy]
-    pred_q_j = np.dot(dh_j, pred_xy_j_dot)
-    alpha_h = alpha(agent_avoid(X_i, X_j, collide_dist))
-    return pred_q_j + alpha_h + lmbd - .1
-
-def g_dynamics(X_i):
+def g_dynamics_ang(X_i):
     '''Dynamics for orientation based controller'''
     return np.array([[np.cos(X_i[2]), 0], [np.sin(X_i[2]), 0], [0, 1]])
 
@@ -250,10 +243,13 @@ def f_dynamics_DI(X_i):
     '''Dynamics for potential field based controller'''
     return np.array([X_i[2], X_i[3], 0, 0])
 
+def g_dynamics_vel():
+    '''Dynamics for potential field based controller'''
+    return np.eye(2)
+
 def g_dynamics_DI():
     '''Dynamics for potential field based controller'''
-    #return np.array([[0, 0], [0, 0], [1, 0], [0, 1]])
-    return np.eye(2)
+    return np.array([[0, 0], [0, 0], [1, 0], [0, 1]])
 
 def prediction_loss(score_func, X_i, current_pred, dXdt_pred, current_gt, dXdt_gt, alpha, lamda, collide_dist):
     '''Loss computed for every prediction, not used anymore'''
@@ -328,13 +324,22 @@ def dict_mid_to_idx(arr, N):
 def inter_mids(d1, d2):
     return np.intersect1d(np.fromiter(d1.keys(), int), np.fromiter(d2.keys(), int), assume_unique=True)
 
-def linear_inequalities_QP(N, current_pos, dXdt, start, lamda, alpha_func, collide_dist):
+def linear_inequalities_QP_ang(N, current_pos, dXdt, start, lamda, alpha_func, collide_dist):
     '''current_pos and dXdt have the same size N, and their indexing aligns identical agents'''
     A = np.empty((N, 2))
     b = np.empty(N)
     for j in range(N):
-        A[j] = np.matmul(-agent_avoid_deriv(start, current_pos[j], collide_dist), g_dynamics(start))
-        b[j] = conformal_CBF_constraint(start, current_pos[j], dXdt[j], lamda, alpha_func, collide_dist)
+        A[j] = np.matmul(-agent_avoid_deriv(start, current_pos[j], collide_dist), g_dynamics_ang(start))
+        b[j] = conformal_CBF_constraint_ang(start, current_pos[j], dXdt[j], lamda, alpha_func, collide_dist)
+    return A, b
+
+def linear_inequalities_QP_vel(N, current_pos, dXdt, start, lamda, alpha_func, collide_dist, rho_0, K_rep):
+    '''current_pos and dXdt have the same size N, and their indexing aligns identical agents'''
+    A = np.empty((N, 2))
+    b = np.empty(N)
+    for j in range(N):
+        A[j] = np.matmul(-h_potential_field_deriv(start, current_pos[j], collide_dist, rho_0, K_rep), g_dynamics_vel())
+        b[j] = conformal_CBF_constraint_vel(start, current_pos[j], dXdt[j], lamda, alpha_func, collide_dist, rho_0, K_rep)
     return A, b
 
 def linear_inequalities_QP_DI(N, current_pos, dXdt, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc):
@@ -351,14 +356,6 @@ def X_i_deriv(X_i, t, u):
 
 def ode_solver(X_i_0, u, dt):
     return odeint(X_i_deriv, X_i_0, np.linspace(0, dt, 4), args=(u,))
-
-def approx_linear_ineq_QP(N, current_pos, next_pos, dXdt, start, lamda, alpha_func, collide_dist, u, dt):
-    A = np.empty((N, 2))
-    b = np.empty(N)
-    for j in range(N):
-        A[j] = np.matmul(-approx_agent_avoid_deriv(start, current_pos[j], collide_dist, u, dt), g_dynamics(start))
-        b[j] = approx_conformal_CBF_constraint(start, current_pos[j], next_pos[j], dXdt[j], lamda, alpha_func, collide_dist, dt)
-    return A, b
 
 def reference_spline(ref_spline, start_pos, start_dir, max_linear_vel_, max_angular_vel_, dt, human_init, collide_dist):
     u_ref = None
@@ -409,7 +406,7 @@ def cartesian_to_polar(X_i):
 
 def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_linear_vel_, max_angular_vel_, lamda, alpha, _, prev_state, collide_dist, conformal_CBF_args):
     # Prepare data
-    ref_object, human_init, tau, loss_type, _, frame_idx, dynamics_type, solve_rate, sub_frame, dist_to_goal = conformal_CBF_args
+    ref_object, human_init, tau, loss_type, frame_idx, solve_rate, sub_frame, dynamics_args, is_learning = conformal_CBF_args
     curr_next_preds, time_step, N, c_pred_mid_idx, current_gt = human_data
     preds_at_last_tau = curr_next_preds[time_step]
     pred_diff = (1 / solve_rate) * (curr_next_preds[time_step + 1] - preds_at_last_tau)
@@ -423,32 +420,37 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
     alpha_func = lambda x: x * 10
     score_func = arctan_score_func
     sub_dt = dt / solve_rate
-    K_acc, K_rep, K_att, rho_0 = 1, 50, 1, 1 + dist_to_goal
-    
-    '''# Reference control
-    if ref_type == 'spline':
-        u_ref = reference_spline(ref_object, start_pos, start_dir, max_linear_vel_, max_angular_vel_, dt, human_init, collide_dist)
-    else: # rrt by default
-        u_ref = reference_rrt(ref_object), 0'''
+    dynamics_type = dynamics_args[0]
+
+    #K_acc, K_rep, K_att, rho_0 = 1, 50, 1, 1 + dist_to_goal
 
     # QP problem
     dXdt_pred = np.array(pred_diff) / dt
-    if dynamics_type == 'lin_ang__vel':
-        A, b = linear_inequalities_QP(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist)
+    if dynamics_type == 'lin_ang__vels':
+        A, b = linear_inequalities_QP_ang(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist)
         lb = np.array([[0], [-max_angular_vel_]])
         ub = np.array([[max_linear_vel_], [max_angular_vel_]])
         u_ref = reference_spline(ref_object, start_pos, start_dir, max_linear_vel_, max_angular_vel_, dt, human_init, collide_dist)
         qp = solve_ls(np.eye(2), u_ref, G=A, h=b, lb=lb, ub=ub, solver="daqp", verbose=True)
-    else:
+    elif dynamics_type == 'velocity_dyn':
+        K_rep, K_att, rho_0 = dynamics_args[1], dynamics_args[2], dynamics_args[3]
         start = polar_to_cartesian(start)
-        A, b = linear_inequalities_QP_DI(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc)
-
-        #A, b = linear_inequalities_QP_DI(N, current_gt, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep, K_acc)
+        A, b = linear_inequalities_QP_vel(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep)
         u_ref = v_des(start, goal[:2], K_att, max_linear_vel_)
         lb = np.array([[-max_linear_vel_], [-max_linear_vel_]])
         ub = np.array([[max_linear_vel_], [max_linear_vel_]])
-        #
         qp = solve_ls(np.eye(2), u_ref, lb=lb, ub=ub, G=A, h=b, solver="daqp", verbose=True)
+    elif dynamics_type == 'double_integral':
+        K_acc, K_rep, K_att, rho_0 = dynamics_args[1], dynamics_args[2], dynamics_args[3], dynamics_args[4]
+        start = polar_to_cartesian(start)
+        A, b = linear_inequalities_QP_vel(N, current_pred, dXdt_pred, start, lamda, alpha_func, collide_dist, rho_0, K_rep)
+        u_ref = v_des(start, goal[:2], K_att, max_linear_vel_)
+        lb = np.array([[-max_linear_vel_], [-max_linear_vel_]])
+        ub = np.array([[max_linear_vel_], [max_linear_vel_]])
+        qp = solve_ls(np.eye(2), u_ref, lb=lb, ub=ub, G=A, h=b, solver="daqp", verbose=True)
+    else:
+        print("uh-oh")
+        pass # shouldn't happen, checked for in plan_trajectory.py
     unsat_qp = qp is None
     if unsat_qp:
         u_qp = np.array([0, 0])
@@ -456,21 +458,22 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
         u_qp = qp
 
     # Compute next position and loss
-    if dynamics_type == 'lin_ang__vel':
-        next_X_i = start + np.matmul(g_dynamics(start), u_qp * dt).reshape(3)
+    if dynamics_type == 'lin_ang__vels':
+        next_X_i = start + np.matmul(g_dynamics_ang(start), u_qp * dt).reshape(3)
         next_pos = np.clip(next_X_i[:2], gmin, gmax)
         next_X_i = np.append(next_pos, [next_X_i[2]])
-    else:
-        '''u_acc = - K_acc * (start[2:] - u_qp)
-        next_traj = ode_solver(start, u_acc, sub_dt)'''
+    elif dynamics_type == 'velocity_dyn':
         next_traj = odeint(lambda X, t, v: v, start[:2], np.linspace(0, sub_dt, 4), args=(u_qp,))
         next_X_i = np.append(next_traj[-1], u_qp)
+    else: #double_integral
+        u_acc = - K_acc * (start[2:] - u_qp)
+        next_traj = ode_solver(start, u_acc, sub_dt)
+        next_X_i = next_traj[-1]
 
     safe_u_ref_count, conservative_pred_count, both_true_but_0_loss_count = 0, 0, 0
     record_CBF = []
-
     loss = None
-    if not sub_frame:
+    if is_learning and not sub_frame:
         if not time_step and prev_state:
             if loss_type == 'Predictor':
                 loss = -.5 # minimum loss value
@@ -507,10 +510,10 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
                         p_dXdt_gt = np.array(p_dXdt_gt) / dt
                         loss_p_gt = p_gt[[p_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
                         #loss_n_gt = n_gt[[n_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
-                        if dynamics_type == 'lin_ang__vel':
-                            p_A_gt, p_b_gt = linear_inequalities_QP(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
+                        if dynamics_type == 'lin_ang__vels':
+                            p_A_gt, p_b_gt = linear_inequalities_QP_ang(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
                         else:
-                            p_A_gt, p_b_gt = linear_inequalities_QP_DI(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep, K_acc)
+                            p_A_gt, p_b_gt = linear_inequalities_QP_vel(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep, K_acc)
                         p_CBF_gt = p_b_gt - np.matmul(p_A_gt, p_u_qp)
                         p_start_pos = p_start[:2]
                         for idx, mid in enumerate(p_dXdt_gt_mids):
@@ -537,7 +540,7 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
                 prev_state.append([start, current_gt, c_gt_mid_idx, u_qp, u_ref, A, b])
 
 
-    if dynamics_type == 'lin_ang__vel':
+    if dynamics_type == 'lin_ang__vels':
         spline = [[0, next_X_i[0]], [0, next_X_i[1]], [0, u_qp[0]], [0, u_qp[1]], [0, next_X_i[2]]]
         v_ref = u_ref[0]
     else:
