@@ -130,7 +130,7 @@ def plot_trajectories_darts(
         gt_trajs_y = np.clip(df[df.metaId == meta].future_y, 0, frame.shape[1])
         ax.plot(gt_trajs_x, gt_trajs_y, color='r', alpha=0.5, linewidth=0.2) # GT!
         ax.plot(pred_trajs_x, pred_trajs_y, color=cmap_lut[meta], alpha=0.5, linewidth=0.2) # Mean!
-        ax.scatter(curr_x, curr_y, facecolor="none", edgecolor=cmap_lut[meta], s=human_area_pt, linewidths=0.1, alpha=0.7) # Draw circles with circle object? obs_patch = plt.Circle(circle_xy, circle_r, edgecolor='k', linestyle='--', fill=False)
+        #ax.scatter(curr_x, curr_y, facecolor="none", edgecolor=cmap_lut[meta], s=human_area_pt, linewidths=0.1, alpha=0.7) # Draw circles with circle object? obs_patch = plt.Circle(circle_xy, circle_r, edgecolor='k', linestyle='--', fill=False)
     # Plot a robot
     curr_x = df[df.metaId == -1].x.iloc[0]
     curr_y = df[df.metaId == -1].y.iloc[0]
@@ -142,10 +142,15 @@ def plot_trajectories_darts(
     add_robot(ax, curr_x, curr_y, 2, 2, r_goal_reached)
     # Plot robot direction and robot-human vectors
     if params['method'] == 'conformal CBF':
+        r_goal_count = int(df[df.metaId == -1]['r_goal_count'].iloc[0]) if not r_goal_reached else -1
+        r_goal = params['r_goal'][r_goal_count]
+        goal_vec = [r_goal[0] - curr_y, r_goal[1] - curr_x]
+        ref_vec = 1024 * goal_vec / np.linalg.norm(goal_vec) * df[df.metaId == -1].ref_vel.iloc[0]
+        ax.plot(np.linspace(curr_y, ref_vec[0]+curr_y), np.linspace(curr_x, ref_vec[1]+curr_x), color='r', alpha=0.666, linewidth=0.2)
         for meta in df[df.metaId >= 0].metaId.unique():
             human_x = df[df.metaId == meta].x.iloc[0]
             human_y = df[df.metaId == meta].y.iloc[0]
-            ax.plot(np.linspace(curr_y, human_x), np.linspace(curr_x, human_y), color='b', alpha=0.5, linewidth=0.2)
+            ax.plot(np.linspace(curr_y, human_x), np.linspace(curr_x, human_y), color='b', alpha=0.333, linewidth=0.1)
             ax.scatter(human_x, human_y, facecolor="none", edgecolor=cmap_lut[meta], s=np.pi * ((human_radius_pt/2) ** 2), linewidths=0.1, alpha=0.7)
     if goal:
         r_goal_count = int(df[df.metaId == -1]['r_goal_count'].iloc[0]) if not r_goal_reached else -1

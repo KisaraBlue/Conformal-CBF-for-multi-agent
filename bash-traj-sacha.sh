@@ -4,11 +4,17 @@ for i in nexus_4; do
     for forecaster in darts; do
         filename=$(basename "$i")
         scene=$(echo "$filename" | rev | cut -d. -f2- | rev)
-        test_lr=1; test_eps=0; test_tau=4; test_al=1;
-        python plan_trajectory.py $scene $forecaster conformal\ CBF $test_lr $test_eps $test_tau $test_al -overwrite;
-        #python make_results.py $scene $forecaster conformal\ CBF $test_lr $test_eps $test_tau $test_al; # -no_video;
-        #python plan_trajectory.py $scene $forecaster conformal\ CBF $test_lr $test_eps $test_tau $test_al -all_predictions -overwrite;
-        #python make_results.py $scene $forecaster conformal\ CBF $test_lr $test_eps $test_tau $test_al -all_predictions;
+        #test_lr=1; test_eps=0; test_tau=4; test_al=1;
+        solve_rate=4
+        alpha=0.1
+        Krep=10
+        Katt=1
+        rho0=500
+        Kacc=1
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning;
         break
         for lr in 1 100; do
             for epsilon in -0.5 0.5; do

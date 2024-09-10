@@ -79,28 +79,27 @@ def plan_trajectory(df, params):
             # user-defined target average loss: epsilon (planner.alphat)
             # period of the sensor's sampling of trajectories: tau (tau)
             # constant for the linear alpha function: a (planner.alpha)
-        planner.alphat, tau, planner.alpha, loss_type = params['conformal_CBF_params']
-        solve_rate, dynamics_type = 16, 'double_integral' # lin_ang__vel or double_integral
-        ref_cntrl = 'spline'
+        solve_rate, planner.alpha, dynamics_args, ground_truth, tau, is_learning, planner.alphat, loss_type = params['conformal_CBF_params']
+        dynamics_type = dynamics_args[0] # lin_ang__vels, velocity_dyn or double_integral
+        if not dynamics_type in ['lin_ang__vels', 'velocity_dyn', 'double_integral']:
+            print("Error: Unknown dynamics type [", dynamics_type, "]")
+            print("Expected dynamics: lin_ang__vels, velocity_dyn or double_integral")
+            exit(1)
         planner.collide_dist = (params['human_size'] + params['robot_size']) * params['px_per_m']
         df = df[df.ahead <= tau]
-        init_df = df[(df.frame == init_frame) & (df.ahead == 1)]
-        human_init_pos = np.stack([
-            init_df[init_df.metaId == mid].iloc[0].loc[['x', 'y']].to_numpy()
-            for mid in init_df.metaId.unique()], axis=0)
-        if ref_cntrl == 'spline':
-            reference = my_spline(r_start, r_goal, 6 * planner.horizon_, 6 * planner.num_waypts_)
+        if dynamics_type == 'lin_ang__vels':
+            init_df = df[(df.frame == init_frame) & (df.ahead == 1)]
+            human_init_pos = np.stack([
+                init_df[init_df.metaId == mid].iloc[0].loc[['x', 'y']].to_numpy()
+                for mid in init_df.metaId.unique()], axis=0)
+            ref_path = my_spline(r_start, r_goal, 6 * planner.horizon_, 6 * planner.num_waypts_)
         else:
-            def rrt_scenario():
-                obstacles = []
-                #start_poly = point_to_poly(r_start)
-                #goal_poly = point_to_poly(r_goal)
-                #return obstacles, start_poly, goal_poly
-            search_area = []
-            envname = ''
-            #reference = run_rrt(rrt_scenario, search_area, envname)
+            human_init_pos = None
+            ref_path = None
+
+
         time_step = 0
-        dist_to_goal = np.linalg.norm(r_goal[:2] - r_start[:2])
+        #dist_to_goal = np.linalg.norm(r_goal[:2] - r_start[:2])
 
         avg_ref, avg_A, avg_b, safe_vs, constr_vs, avg_lmbd, losses, unsat_frames, nb_safe_u_ref, nb_conservative_pred, nb_both_true_but_0_loss = 0, np.zeros(2), 0, [], [], 0, [], [], 0, 0, 0
         stats_df = []
@@ -128,24 +127,27 @@ def plan_trajectory(df, params):
                     N = len(curr_metaIds)
                     human_traj_preds = np.empty((tau + 1, N, 2))
                     human_traj_preds[0] = human_pos_gt[:, :2]
-                    for t in range(1, tau+1):
-                        '''human_traj_preds[t] = np.stack([
-                            curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
-                            for mid in curr_metaIds], axis=0)'''
-                        preds_at_t = np.empty((N, 2))
-                        frame_ahead = frame_idx + t
-                        for idx in range(N):
-                            mid = curr_metaIds[idx]
-                            if ((df.metaId == mid) & (df.frame == frame_ahead)).any():
-                                preds_at_t[idx] = df[(df.metaId == mid) & (df.frame == frame_ahead)].iloc[0].loc[['x', 'y']].to_numpy()
-                            else:
-                                preds_at_t[idx] = human_traj_preds[t-1, idx]
-                        human_traj_preds[t] = preds_at_t
+                    if ground_truth:
+                        for t in range(1, tau+1):
+                            preds_at_t = np.empty((N, 2))
+                            frame_ahead = frame_idx + t
+                            for idx in range(N):
+                                mid = curr_metaIds[idx]
+                                if ((df.metaId == mid) & (df.frame == frame_ahead)).any():
+                                    preds_at_t[idx] = df[(df.metaId == mid) & (df.frame == frame_ahead)].iloc[0].loc[['x', 'y']].to_numpy()
+                                else:
+                                    preds_at_t[idx] = human_traj_preds[t-1, idx]
+                            human_traj_preds[t] = preds_at_t
+                    else: # use predictions
+                        for t in range(1, tau+1):
+                            human_traj_preds[t] = np.stack([
+                                curr_df[(curr_df.metaId == mid) & (curr_df.ahead == t)].iloc[0].loc[['pred_x', 'pred_y']].to_numpy()
+                                for mid in curr_metaIds], axis=0)
                     preds_mid_idx = {curr_metaIds[i]: i for i in range(N)}
                 
                 # Plan
                 for sub_frame in range(solve_rate):
-                    robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(reference, human_init_pos, tau, loss_type, ref_cntrl, frame_idx, dynamics_type, solve_rate, sub_frame, dist_to_goal))
+                    robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(ref_path, human_init_pos, tau, loss_type, frame_idx, solve_rate, sub_frame, dynamics_args, is_learning))
                     avg_ref += v_ref
                     avg_A += A
                     avg_b += b
@@ -283,16 +285,18 @@ def plan_trajectory(df, params):
     plan_df = pd.concat([df] + plan_df, axis=0, ignore_index=True)
     if params['method'] == 'conformal CBF':
         nb_frames = len(frames_indices)
-        print(f"Average ref vel: {avg_ref / nb_frames}, Average A: {avg_A / nb_frames}, Average b: {avg_b / nb_frames}, Average lambda: {avg_lmbd / nb_frames}, Unsatisfiable QP: {unsat_frames}")
+        print(f"Average ref vel: {avg_ref / nb_frames}, Average A: {avg_A / nb_frames}, Average b: {avg_b / nb_frames}, Average lambda: {avg_lmbd / nb_frames}, Unsatisfiable QP: {len(unsat_frames)}")
         safe_vs, constr_vs = np.array(safe_vs), np.array(constr_vs)
         losses = np.array(losses)
         print(f"Safety violations:\nMin: {np.min(safe_vs)}, Avg: {np.average(safe_vs)}, Max: {np.max(safe_vs)}")
         print(f"Steps of violation: {np.nonzero(safe_vs) + init_frame}")
         #print(f"Number of agents that weren't seen: {count_invis}")
         print(f"Predicted constraint violations:\nMin: {np.min(constr_vs)}, Avg: {np.average(constr_vs)}, Max: {np.max(constr_vs)}")
-        print(f"Loss stats:\nMin: {np.min(losses)}, Avg: {np.average(losses)}, Max: {np.max(losses)}")
+        if is_learning:
+            print(f"Loss stats:\nMin: {np.min(losses)}, Avg: {np.average(losses)}, Max: {np.max(losses)}")
+            stats_df = pd.concat(stats_df, axis=0, ignore_index=True)
         print(f"Reference cntrl was safe: {nb_safe_u_ref}, Prediction was too conservative: {nb_conservative_pred}, Both happened but positive loss: {nb_both_true_but_0_loss}")
-        stats_df = pd.concat(stats_df, axis=0, ignore_index=True)
+        
         return plan_df, stats_df
     else:
         return plan_df
@@ -334,7 +338,6 @@ if __name__ == "__main__":
     scene = sys.argv[1]
     forecaster = sys.argv[2]
     method = sys.argv[3]
-    lr = float(sys.argv[4])
     json_name = './params/' + scene + '.json'
     params = yaml.safe_load(open(json_name))
 
@@ -344,15 +347,54 @@ if __name__ == "__main__":
     H, W, _ = frames[0].shape
 
     if method == 'conformal CBF':
-        eps = float(sys.argv[5])
-        tau = int(sys.argv[6])
-        a_lin = float(sys.argv[7])
-        loss_type = 'QPcontrol' if len(sys.argv) < 9 or sys.argv[8] != '-all_predictions' else 'Predictor'
-        params = setup_params(params, H, W, lr, method, extra=(eps, tau, a_lin, loss_type))
-        str_append = 'h' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_') + '_' + 't' + str(tau) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + loss_type
+        solve_rate = int(sys.argv[4])
+        a_lin = float(sys.argv[5])
+        dynamics_type = sys.argv[6]
+        if dynamics_type == 'velocity_dyn':
+            K_rep = float(sys.argv[7])
+            K_att = float(sys.argv[8])
+            rho0 = float(sys.argv[9])
+            dynamics_args = (dynamics_type, K_rep, K_att, rho0)
+            next_arg = 10
+        elif dynamics_type == 'double_integral':
+            K_acc = float(sys.argv[7])
+            K_rep = float(sys.argv[8])
+            K_att = float(sys.argv[9])
+            rho0 = float(sys.argv[10])
+            dynamics_args = (dynamics_type, K_acc, K_rep, K_att, rho0)
+            next_arg = 11
+        else:
+            print("Unimplemented dynamics")
+            exit(1)
+        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + dynamics_type
+        ground_truth = (sys.argv[next_arg] == 'gound_truth')
+        if ground_truth:
+            str_append += '_' + 'gt'
+            tau = 2
+        else:
+            tau = int(sys.argv[next_arg])
+            str_append += '_' + 'pred' + str(tau)
+        next_arg += 1
+        no_learning = (sys.argv[next_arg] == '-no_learning')
+        if no_learning:
+            next_arg += 1
+            lr = 0 #value unused
+            eps = 0 #value unused
+            loss_type = '' #value unused
+            str_append += '_' + 'no_learning'
+        else:
+            # learning parameters
+            lr = float(sys.argv[next_arg])
+            eps = float(sys.argv[next_arg + 1])
+            next_arg += 2
+            loss_type = 'Predictor' if len(sys.argv) < next_arg + 1 or sys.argv[next_arg] == '-all_predictions' else 'QPcontrol'
+            str_append += '_' + 'lr' + str(lr).replace('.', '_') + 'e' + str(eps).replace('.', '_') + '_' + loss_type
+
+        params = setup_params(params, H, W, lr, method, extra=(solve_rate, a_lin, dynamics_args, ground_truth, tau, not no_learning, eps, loss_type))
         plan_folder = './plans/' + scene + '/conformal_CBF/'
         stats_filename = os.path.join(plan_folder, 'stats_df_' + str_append + '.csv')
     else:
+        lr = float(sys.argv[4])
         str_append = forecaster + '_' + method.replace(' ', '_') + "_" + str(lr).replace('.', '_')
         params = setup_params(params, H, W, lr, method=method)
         plan_folder = './plans/' + scene + '/decision_theory/'
@@ -388,7 +430,8 @@ if __name__ == "__main__":
             plan_df, stats_df = plan_trajectory(future_df, params)
             # Save the plans, along with the forecaster and learning rate
             os.makedirs(plan_folder, exist_ok=True)
-            stats_df.to_csv(stats_filename)
+            if not no_learning:
+                stats_df.to_csv(stats_filename)
         else:
             plan_df = plan_trajectory(future_df, params)
         # Save the plans, along with the forecaster and learning rate
