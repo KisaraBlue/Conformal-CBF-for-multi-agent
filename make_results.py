@@ -29,11 +29,14 @@ if __name__ == "__main__":
         solve_rate = int(sys.argv[4])
         a_lin = float(sys.argv[5])
         dynamics_type = sys.argv[6]
+        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_')
         if dynamics_type == 'velocity_dyn':
+            K_acc = 'NA'
             K_rep = float(sys.argv[7])
             K_att = float(sys.argv[8])
             rho0 = float(sys.argv[9])
             dynamics_args = (dynamics_type, K_rep, K_att, rho0)
+            str_append += '_' + 'Vcntrl' + '_' + str(K_rep).replace('.', '_') + '_' + str(K_att).replace('.', '_') + '_' + str(rho0).replace('.', '_')
             next_arg = 10
         elif dynamics_type == 'double_integral':
             K_acc = float(sys.argv[7])
@@ -41,11 +44,11 @@ if __name__ == "__main__":
             K_att = float(sys.argv[9])
             rho0 = float(sys.argv[10])
             dynamics_args = (dynamics_type, K_acc, K_rep, K_att, rho0)
+            str_append += '_' + 'DI' + '_' + str(K_acc).replace('.', '_') + '_' + str(K_rep).replace('.', '_') + '_' + str(K_att).replace('.', '_') + '_' + str(rho0).replace('.', '_')
             next_arg = 11
         else:
             print("Unimplemented dynamics")
             exit(1)
-        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + dynamics_type
         ground_truth = (sys.argv[next_arg] == 'gound_truth')
         if ground_truth:
             str_append += '_' + 'gt'
@@ -57,9 +60,9 @@ if __name__ == "__main__":
         no_learning = (sys.argv[next_arg] == '-no_learning')
         if no_learning:
             next_arg += 1
-            lr = 0 #value unused
-            eps = 0 #value unused
-            loss_type = '' #value unused
+            lr = 'NA' #value unused
+            eps = 'NA' #value unused
+            loss_type = 'no_learning' #value unused
             str_append += '_' + 'no_learning'
         else:
             # learning parameters
@@ -78,6 +81,7 @@ if __name__ == "__main__":
         metrics_folder = './metrics/' + scene + '/conformal_CBF/'
         videos_folder = './videos/' + scene + '/conformal_CBF/'
         stats_filename = os.path.join(plan_folder, 'stats_df_' + str_append + '.csv')
+        extra_params = (solve_rate, a_lin, dynamics_type, K_acc, K_rep, K_att, rho0, 'gt' if ground_truth else tau, loss_type, lr, eps)
     else:
         lr = float(sys.argv[4])
         str_append = forecaster + '_' + method.replace(' ', '_') + "_" + str(lr).replace('.', '_')
@@ -85,6 +89,7 @@ if __name__ == "__main__":
         plan_folder = './plans/' + scene + '/decision_theory/'
         metrics_folder = './metrics/' + scene + '/decision_theory/'
         videos_folder = './videos/' + scene + '/decision_theory/'
+        extra_params = None
     
     plan_filename = os.path.join(plan_folder, 'plan_df_' + str_append + '.csv')
     metrics_filename = os.path.join(metrics_folder, 'metrics_df_' + str_append + '.csv')
@@ -111,4 +116,4 @@ if __name__ == "__main__":
         generate_video(frames, plan_df, cmap_lut, videos_folder, video_filename, aheads=params['aheads'], params=params, truncate_video=True, frame_indexes=frames_to_read)
 
     # Generate metrics
-    make_metrics(plan_df, metrics_folder, metrics_filename, forecaster, method, float(lr), params, str_append=str_append)
+    make_metrics(plan_df, metrics_folder, metrics_filename, forecaster, method, float(lr), params, str_append=str_append, extra_params=extra_params)

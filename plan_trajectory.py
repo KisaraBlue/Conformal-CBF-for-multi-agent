@@ -362,11 +362,13 @@ if __name__ == "__main__":
         solve_rate = int(sys.argv[4])
         a_lin = float(sys.argv[5])
         dynamics_type = sys.argv[6]
+        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_')
         if dynamics_type == 'velocity_dyn':
             K_rep = float(sys.argv[7])
             K_att = float(sys.argv[8])
             rho0 = float(sys.argv[9])
             dynamics_args = (dynamics_type, K_rep, K_att, rho0)
+            str_append += '_' + 'Vcntrl' + '_' + str(K_rep).replace('.', '_') + '_' + str(K_att).replace('.', '_') + '_' + str(rho0).replace('.', '_')
             next_arg = 10
         elif dynamics_type == 'double_integral':
             K_acc = float(sys.argv[7])
@@ -374,11 +376,11 @@ if __name__ == "__main__":
             K_att = float(sys.argv[9])
             rho0 = float(sys.argv[10])
             dynamics_args = (dynamics_type, K_acc, K_rep, K_att, rho0)
+            str_append += '_' + 'DI' + '_' + str(K_acc).replace('.', '_') + '_' + str(K_rep).replace('.', '_') + '_' + str(K_att).replace('.', '_') + '_' + str(rho0).replace('.', '_')
             next_arg = 11
         else:
             print("Unimplemented dynamics")
             exit(1)
-        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + dynamics_type
         ground_truth = (sys.argv[next_arg] == 'gound_truth')
         if ground_truth:
             str_append += '_' + 'gt'

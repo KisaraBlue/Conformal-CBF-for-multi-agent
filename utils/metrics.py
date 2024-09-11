@@ -17,27 +17,52 @@ def get_distances(df, px_per_m=None):
     distances = np.array(distances) / px_per_m if px_per_m is not None else np.array(distances)
     return distances
 
-def make_metrics(df, metrics_folder, metrics_filename, forecaster, method, lr, params, fps=30, str_append=None):
+def make_metrics(df, metrics_folder, metrics_filename, forecaster, method, lr, params, fps=30, str_append=None, extra_params=None):
     unique_frames = df[df.r_goal_reached == False].frame.unique()
     # Calculate distances of closest human to robot in each frame
     distances = get_distances(df)
     collision_distance = ((params['robot_size'] + params['human_size'])*params['px_per_m'])
     did_collide = distances.min() < collision_distance
     did_succeed = df.r_goal_count.max() > 0
-    metrics = {
-        'forecaster' : forecaster,
-        'method' : method,
-        'lr' : lr,
-        'success' : str(did_succeed),
-        'goal time (s)' : (unique_frames.max() - unique_frames.min())/fps/df.r_goal_count.max() if did_succeed else np.infty,
-        'safe' : str(~did_collide),
-        'min dist (m)' : distances.min()/params['px_per_m'],
-        'avg dist (m)' : distances.mean()/params['px_per_m'],
-        '5% dist (m)'  : np.quantile(distances, 0.05)/params['px_per_m'],
-        '10% dist (m)' : np.quantile(distances, 0.1)/params['px_per_m'],
-        '25% dist (m)' : np.quantile(distances, 0.25)/params['px_per_m'],
-        '50% dist (m)' : np.quantile(distances, 0.5)/params['px_per_m']
-    }
+    if method == 'conformal CBF':
+        solve_rate, alpha, dynamics_type, K_acc, K_rep, K_att, rho0, pred_rate, loss_type, lr, eps = extra_params
+        metrics = {
+            'solve_rate': solve_rate, 
+            'alpha': alpha, 
+            'dynamics_type': dynamics_type, 
+            'K_acc': K_acc, 
+            'K_rep': K_rep, 
+            'K_att': K_att, 
+            'rho0': rho0, 
+            'pred_rate': pred_rate, 
+            'loss_type': loss_type, 
+            'lr': lr, 
+            'eps': eps,
+            'success' : str(did_succeed),
+            'goal time (s)' : (unique_frames.max() - unique_frames.min())/fps/df.r_goal_count.max() if did_succeed else np.infty,
+            'safe' : str(~did_collide),
+            'min dist (m)' : distances.min()/params['px_per_m'],
+            'avg dist (m)' : distances.mean()/params['px_per_m'],
+            '5% dist (m)'  : np.quantile(distances, 0.05)/params['px_per_m'],
+            '10% dist (m)' : np.quantile(distances, 0.1)/params['px_per_m'],
+            '25% dist (m)' : np.quantile(distances, 0.25)/params['px_per_m'],
+            '50% dist (m)' : np.quantile(distances, 0.5)/params['px_per_m']
+        }
+    else:
+        metrics = {
+            'forecaster' : forecaster,
+            'method' : method,
+            'lr' : lr,
+            'success' : str(did_succeed),
+            'goal time (s)' : (unique_frames.max() - unique_frames.min())/fps/df.r_goal_count.max() if did_succeed else np.infty,
+            'safe' : str(~did_collide),
+            'min dist (m)' : distances.min()/params['px_per_m'],
+            'avg dist (m)' : distances.mean()/params['px_per_m'],
+            '5% dist (m)'  : np.quantile(distances, 0.05)/params['px_per_m'],
+            '10% dist (m)' : np.quantile(distances, 0.1)/params['px_per_m'],
+            '25% dist (m)' : np.quantile(distances, 0.25)/params['px_per_m'],
+            '50% dist (m)' : np.quantile(distances, 0.5)/params['px_per_m']
+        }
     metrics = pd.DataFrame(metrics, index=[0])
     # Save out
     os.makedirs(metrics_folder, exist_ok=True)
