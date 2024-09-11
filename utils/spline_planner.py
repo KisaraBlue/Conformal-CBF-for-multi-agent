@@ -513,7 +513,7 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
                         if dynamics_type == 'lin_ang__vels':
                             p_A_gt, p_b_gt = linear_inequalities_QP_ang(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
                         else:
-                            p_A_gt, p_b_gt = linear_inequalities_QP_vel(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep, K_acc)
+                            p_A_gt, p_b_gt = linear_inequalities_QP_vel(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep)
                         p_CBF_gt = p_b_gt - np.matmul(p_A_gt, p_u_qp)
                         p_start_pos = p_start[:2]
                         for idx, mid in enumerate(p_dXdt_gt_mids):

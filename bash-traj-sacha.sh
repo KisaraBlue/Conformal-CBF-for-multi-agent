@@ -11,10 +11,28 @@ for i in nexus_4; do
         Katt=1
         rho0=500
         Kacc=1
-        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning -overwrite;
-        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning;
-        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning -overwrite;
-        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth -no_learning -no_video;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth -no_learning -no_video;
+        ### using predictions every tau frames
+        tau=4
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 $tau -no_learning; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 $tau -no_learning -no_video;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 $tau -no_learning; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 $tau -no_learning -no_video;
+        ### using learning with parameters eta and epsilon
+        lr=1
+        eps=0
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth $lr $eps; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 gound_truth $lr $eps -no_video;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth $lr $eps; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 gound_truth $lr $eps -no_video;
+        ### using predictions and learning with tau, eta and epsilon
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 $tau $lr $eps; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha velocity_dyn $Krep $Katt $rho0 $tau $lr $eps;
+        python plan_trajectory.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 $tau $lr $eps; # -overwrite;
+        python make_results.py $scene $forecaster conformal\ CBF $solve_rate $alpha double_integral $Kacc $Krep $Katt $rho0 $tau $lr $eps;
         break
         for lr in 1 100; do
             for epsilon in -0.5 0.5; do

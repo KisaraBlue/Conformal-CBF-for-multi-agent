@@ -102,7 +102,16 @@ def plan_trajectory(df, params):
         #dist_to_goal = np.linalg.norm(r_goal[:2] - r_start[:2])
 
         avg_ref, avg_A, avg_b, safe_vs, constr_vs, avg_lmbd, losses, unsat_frames, nb_safe_u_ref, nb_conservative_pred, nb_both_true_but_0_loss = 0, np.zeros(2), 0, [], [], 0, [], [], 0, 0, 0
-        stats_df = []
+        stats_df = [pd.DataFrame({
+                                'frame': 0,
+                                'metaID': [-1],
+                                'h_dot_alpha_h': 0,
+                                'distance': 0,
+                                'cbf_func': 0,
+                                'grad_cbf': 0,
+                                'u_ref': 0,
+                                'u_qp': 0
+                            })]
         #static_pedestrian = np.array([[]])
         
     for frame_idx in tqdm(frames_indices):
@@ -162,6 +171,9 @@ def plan_trajectory(df, params):
                     if not loss is None:
                         losses.append(loss)
                     r_start = [ robot_plan[0][1], robot_plan[1][1], robot_plan[4][1], robot_plan[2][1] ]
+                    '''if is_learning and loss_type == 'QPcontrol' and not sub_frame and not record_CBF and not time_step and planner.prev_state:
+                        print("Problem")
+                        exit()'''
                     for record in record_CBF:
                         t, mid, value, dist, h, grad_h, u_ref, u_qp = record
                         stats_df += [
@@ -384,11 +396,15 @@ if __name__ == "__main__":
             str_append += '_' + 'no_learning'
         else:
             # learning parameters
+            all_predictions = (sys.argv[next_arg] == '-all_predictions')
+            if all_predictions:
+                loss_type = 'Predictor'
+                next_arg += 1
+            else:
+                loss_type = 'QPcontrol'
             lr = float(sys.argv[next_arg])
             eps = float(sys.argv[next_arg + 1])
-            next_arg += 2
-            loss_type = 'Predictor' if len(sys.argv) < next_arg + 1 or sys.argv[next_arg] == '-all_predictions' else 'QPcontrol'
-            str_append += '_' + 'lr' + str(lr).replace('.', '_') + 'e' + str(eps).replace('.', '_') + '_' + loss_type
+            str_append += '_' + loss_type + '_' + 'lr' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_')
 
         params = setup_params(params, H, W, lr, method, extra=(solve_rate, a_lin, dynamics_args, ground_truth, tau, not no_learning, eps, loss_type))
         plan_folder = './plans/' + scene + '/conformal_CBF/'

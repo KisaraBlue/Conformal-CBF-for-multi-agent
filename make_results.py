@@ -14,7 +14,6 @@ if __name__ == "__main__":
     scene = sys.argv[1]
     forecaster = sys.argv[2]
     method = sys.argv[3]
-    lr = float(sys.argv[4])
     json_name = './params/' + scene + '.json'
     step = 1
     params = yaml.safe_load(open(json_name))
@@ -27,17 +26,60 @@ if __name__ == "__main__":
     df = pd.read_csv('./data/' + forecaster + '/' + scene + '.csv')
     
     if method == 'conformal CBF':
-        eps = float(sys.argv[5])
-        tau = int(sys.argv[6])
-        a_lin = float(sys.argv[7])
-        loss_type = 'QPcontrol' if len(sys.argv) < 9 or sys.argv[8] != '-all_predictions' else 'Predictor'
-        params = setup_params(params, H, W, lr, method, extra=(eps, tau, a_lin, loss_type))
-        str_append = 'h' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_') + '_' + 't' + str(tau) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + loss_type
+        solve_rate = int(sys.argv[4])
+        a_lin = float(sys.argv[5])
+        dynamics_type = sys.argv[6]
+        if dynamics_type == 'velocity_dyn':
+            K_rep = float(sys.argv[7])
+            K_att = float(sys.argv[8])
+            rho0 = float(sys.argv[9])
+            dynamics_args = (dynamics_type, K_rep, K_att, rho0)
+            next_arg = 10
+        elif dynamics_type == 'double_integral':
+            K_acc = float(sys.argv[7])
+            K_rep = float(sys.argv[8])
+            K_att = float(sys.argv[9])
+            rho0 = float(sys.argv[10])
+            dynamics_args = (dynamics_type, K_acc, K_rep, K_att, rho0)
+            next_arg = 11
+        else:
+            print("Unimplemented dynamics")
+            exit(1)
+        str_append = 's' + str(solve_rate) + '_' + 'a' + str(a_lin).replace('.', '_') + '_' + dynamics_type
+        ground_truth = (sys.argv[next_arg] == 'gound_truth')
+        if ground_truth:
+            str_append += '_' + 'gt'
+            tau = 2
+        else:
+            tau = int(sys.argv[next_arg])
+            str_append += '_' + 'pred' + str(tau)
+        next_arg += 1
+        no_learning = (sys.argv[next_arg] == '-no_learning')
+        if no_learning:
+            next_arg += 1
+            lr = 0 #value unused
+            eps = 0 #value unused
+            loss_type = '' #value unused
+            str_append += '_' + 'no_learning'
+        else:
+            # learning parameters
+            all_predictions = (sys.argv[next_arg] == '-all_predictions')
+            if all_predictions:
+                loss_type = 'Predictor'
+                next_arg += 1
+            else:
+                loss_type = 'QPcontrol'
+            lr = float(sys.argv[next_arg])
+            eps = float(sys.argv[next_arg + 1])
+            str_append += '_' + loss_type + '_' + 'lr' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_')
+
+        params = setup_params(params, H, W, lr, method, extra=(solve_rate, a_lin, dynamics_args, ground_truth, tau, not no_learning, eps, loss_type))
         plan_folder = './plans/' + scene + '/conformal_CBF/'
         metrics_folder = './metrics/' + scene + '/conformal_CBF/'
         videos_folder = './videos/' + scene + '/conformal_CBF/'
         stats_filename = os.path.join(plan_folder, 'stats_df_' + str_append + '.csv')
     else:
+        lr = float(sys.argv[4])
         str_append = forecaster + '_' + method.replace(' ', '_') + "_" + str(lr).replace('.', '_')
         params = setup_params(params, H, W, lr, method)
         plan_folder = './plans/' + scene + '/decision_theory/'
@@ -46,7 +88,7 @@ if __name__ == "__main__":
     
     plan_filename = os.path.join(plan_folder, 'plan_df_' + str_append + '.csv')
     metrics_filename = os.path.join(metrics_folder, 'metrics_df_' + str_append + '.csv')
-    video_filename = str_append
+    video_filename = 'vid_' + str_append
 
     try:
         plan_df = pd.read_csv(plan_filename)
@@ -57,7 +99,7 @@ if __name__ == "__main__":
     frames_to_read = frames_to_read[::step]
     if (frames_to_read.max() < plan_df.frame.max()) & ((plan_df.r_goal_reached == True).sum() > 0):
         frames_to_read = np.append(frames_to_read, int(plan_df[plan_df.r_goal_reached == True].frame.unique().min()))
-    if method == 'conformal CBF':
+    if method == 'conformal CBF' and not no_learning:
         plot_name = 'plots_' + (str_append if not str_append is None else 'placeholder') + '.png'
         plot_CBFs(pd.read_csv(stats_filename), metrics_folder, plot_name)
 
