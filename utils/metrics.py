@@ -25,28 +25,36 @@ def make_metrics(df, metrics_folder, metrics_filename, forecaster, method, lr, p
     did_collide = distances.min() < collision_distance
     did_succeed = df.r_goal_count.max() > 0
     if method == 'conformal CBF':
+        if did_collide:
+            nb_collide = np.count_nonzero(np.minimum(distances - collision_distance, 0))
+        else:
+            nb_collide = 0
+        ratio_unsat = 100 * df[df.r_goal_reached == False].unsatQP.sum() / len(unique_frames)
+
         solve_rate, alpha, dynamics_type, K_acc, K_rep, K_att, rho0, pred_rate, loss_type, lr, eps = extra_params
         metrics = {
-            'solve_rate': solve_rate, 
-            'alpha': alpha, 
-            'dynamics_type': dynamics_type, 
-            'K_acc': K_acc, 
-            'K_rep': K_rep, 
-            'K_att': K_att, 
-            'rho0': rho0, 
-            'pred_rate': pred_rate, 
-            'loss_type': loss_type, 
+            'QPr': solve_rate, 
+            'al': alpha, 
+            'dyn': dynamics_type, 
+            'acc': K_acc, 
+            'rep': K_rep, 
+            'att': K_att, 
+            'sense': rho0, 
+            'tau': pred_rate, 
+            'loss': loss_type, 
             'lr': lr, 
             'eps': eps,
-            'success' : str(did_succeed),
-            'goal time (s)' : (unique_frames.max() - unique_frames.min())/fps/df.r_goal_count.max() if did_succeed else np.infty,
+            'reach' : str(did_succeed),
+            'goalT' : (unique_frames.max() - unique_frames.min())/fps/df.r_goal_count.max() if did_succeed else np.infty,
             'safe' : str(~did_collide),
-            'min dist (m)' : distances.min()/params['px_per_m'],
-            'avg dist (m)' : distances.mean()/params['px_per_m'],
-            '5% dist (m)'  : np.quantile(distances, 0.05)/params['px_per_m'],
-            '10% dist (m)' : np.quantile(distances, 0.1)/params['px_per_m'],
-            '25% dist (m)' : np.quantile(distances, 0.25)/params['px_per_m'],
-            '50% dist (m)' : np.quantile(distances, 0.5)/params['px_per_m']
+            '#vf' : nb_collide,
+            'N_unsat': ratio_unsat,
+            'minD' : distances.min()/params['px_per_m'],
+            'avgD' : distances.mean()/params['px_per_m'],
+            '5%D'  : np.quantile(distances, 0.05)/params['px_per_m'],
+            #'10% dist (m)' : np.quantile(distances, 0.1)/params['px_per_m'],
+            #'25% dist (m)' : np.quantile(distances, 0.25)/params['px_per_m'],
+            '50%D' : np.quantile(distances, 0.5)/params['px_per_m']
         }
     else:
         metrics = {

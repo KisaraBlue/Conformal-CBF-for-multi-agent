@@ -155,6 +155,7 @@ def plan_trajectory(df, params):
                     preds_mid_idx = {curr_metaIds[i]: i for i in range(N)}
                 
                 # Plan
+                unsat_frame = False
                 for sub_frame in range(solve_rate):
                     robot_plan, (v_ref, A, b, safe_v, constr_v, lmbd, loss, unsat, safe_u_ref, conservative_pred, both_true_but_0_loss, record_CBF) = planner.plan(r_start, r_goal, (human_traj_preds, time_step, N, preds_mid_idx, human_pos_gt), 'conformal CBF', worst_residuals=np.array([0]), conformal_CBF_args=(ref_path, human_init_pos, tau, loss_type, frame_idx, solve_rate, sub_frame, dynamics_args, is_learning))
                     avg_ref += v_ref
@@ -164,6 +165,7 @@ def plan_trajectory(df, params):
                     constr_vs.append(constr_v)
                     avg_lmbd += lmbd
                     if unsat:
+                        unsat_frame = True
                         unsat_frames.append((frame_idx, sub_frame))
                     nb_safe_u_ref += safe_u_ref
                     nb_conservative_pred += conservative_pred
@@ -201,29 +203,10 @@ def plan_trajectory(df, params):
                         'lambda' : planner.lamda,
                         'alphat' : planner.alphat,
                         'metaId': -1,
-                        'ref_vel': v_ref
+                        'ref_vel': v_ref,
+                        'unsatQP': unsat_frame
                     })
                 ]
-                '''if dynamics_type == 'double_integral':
-                    stats_df += [
-                        pd.DataFrame({
-                            'frame': frame_idx,
-                            'metaID': [-1],
-                            'h_dot_alpha_h': 0,
-                            'distance': 0,
-                            'linear_vel': robot_plan[2][1],
-                            'angular_vel': robot_plan[3][1]
-                        })
-                        ]
-                else:
-                    stats_df += [
-                        pd.DataFrame({
-                            'frame': frame_idx,
-                            'metaID': [-1],
-                            'ref_vel': v_ref,
-                            'angular_vel': robot_plan[3][1]
-                        })
-                        ]'''
 
                 # Take next step
                 time_step = (time_step + 1) % tau
@@ -398,14 +381,9 @@ if __name__ == "__main__":
             str_append += '_' + 'no_learning'
         else:
             # learning parameters
-            all_predictions = (sys.argv[next_arg] == '-all_predictions')
-            if all_predictions:
-                loss_type = 'Predictor'
-                next_arg += 1
-            else:
-                loss_type = 'QPcontrol'
-            lr = float(sys.argv[next_arg])
-            eps = float(sys.argv[next_arg + 1])
+            loss_type = sys.argv[next_arg]
+            lr = float(sys.argv[next_arg + 1])
+            eps = float(sys.argv[next_arg + 2])
             str_append += '_' + loss_type + '_' + 'lr' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_')
 
         params = setup_params(params, H, W, lr, method, extra=(solve_rate, a_lin, dynamics_args, ground_truth, tau, not no_learning, eps, loss_type))

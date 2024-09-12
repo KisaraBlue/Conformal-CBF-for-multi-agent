@@ -100,7 +100,7 @@ class SplinePlanner:
         if method == 'conformal CBF':
             self.prev_state = curr_state
             if not loss is None:
-                self.lamda += conformal_CBF_args[2] * self.lr * (self.alphat + loss)
+                self.lamda += conformal_CBF_args[2] * self.lr * (self.alphat - loss)
 
         if method == 'conformal CBF':
             return opt_spline, vels
@@ -225,7 +225,7 @@ def conformal_CBF_constraint_vel(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_d
     dh_i = h_potential_field_deriv(X_i, X_j, collide_dist, rho_0, K_rep)
     pred_q_j = np.dot(-dh_i, pred_xy_j_dot)
     alpha_h = alpha(h_potential_field(X_i, X_j, collide_dist, rho_0, K_rep))
-    return alpha_h + pred_q_j - .1# + lmbd 
+    return alpha_h + pred_q_j - .1 + lmbd 
 
 def conformal_CBF_constraint_DI(X_i, X_j, pred_xy_j_dot, lmbd, alpha, collide_dist, rho_0, K_rep, K_acc):
     '''RHS of the QP constraint for potential field based controller'''
@@ -252,7 +252,7 @@ def g_dynamics_DI():
     return np.array([[0, 0], [0, 0], [1, 0], [0, 1]])
 
 def prediction_loss(score_func, X_i, current_pred, dXdt_pred, current_gt, dXdt_gt, alpha, lamda, collide_dist):
-    '''Loss computed for every prediction, not used anymore'''
+    '''Loss computed for every prediction'''
     N = len(current_pred)
     pred_q = [np.dot(-agent_avoid_deriv(X_i, current_pred[j], collide_dist)[0, :2], dXdt_pred[j]) for j in range(N)]
     gt_q = [np.dot(-agent_avoid_deriv(X_i, current_gt[j], collide_dist)[0, :2], dXdt_gt[j]) for j in range(N)]
@@ -262,15 +262,13 @@ def prediction_loss(score_func, X_i, current_pred, dXdt_pred, current_gt, dXdt_g
     return np.max([score_func(D_alpha_h[j] + pred_q[j] - gt_q[j] + lamda) 
                    for j in range(N)])
 
-def control_loss(score_func, u_qp, A_gt, b_gt, QP_score):
+def greater_than_gt_loss(score_func, u_qp, A_gt, b_gt, A_pred, b_pred):
     '''Positive loss computed when control used returns a worse score for ground truth then prediction'''
-    return score_func(max(0, np.max(np.matmul(A_gt, u_qp) - b_gt) - QP_score))
+    return score_func(max(0, np.max(np.matmul(A_gt, u_qp) - b_gt) - np.max(np.matmul(A_pred, u_qp) - b_pred)))
 
-def extended_control_loss(score_func, u_qp, A_gt, b_gt, QP_score):
-    s = score_func(np.max(np.matmul(A_gt, u_qp) - b_gt) - QP_score)
-    if s < 0:
-        return s
-    return s / 1 #change if needed
+def all_pred_loss(score_func, u_qp, A_gt, b_gt, A_pred, b_pred):
+    '''Loss computed on the maximal difference between ground truth and predicted CBF constraints'''
+    return score_func(np.max(np.matmul(A_gt, u_qp) - b_gt) - np.max(np.matmul(A_pred, u_qp) - b_pred))
 
 def conservativeness_loss(score_func, u_qp, u_ref, A_gt, b_gt, A, b):
     '''Negative loss computed when reference control is safe but used control is unsafe'''
@@ -421,6 +419,10 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
     score_func = arctan_score_func
     sub_dt = dt / solve_rate
     dynamics_type = dynamics_args[0]
+    if loss_type == 'all_pred':
+        loss_func = all_pred_loss
+    else:
+        loss_func = greater_than_gt_loss
 
     #K_acc, K_rep, K_att, rho_0 = 1, 50, 1, 1 + dist_to_goal
 
@@ -473,71 +475,40 @@ def plan_CBF(start, goal, human_data, gmin, gmax, horizon_, num_waypts_, max_lin
     safe_u_ref_count, conservative_pred_count, both_true_but_0_loss_count = 0, 0, 0
     record_CBF = []
     loss = None
-    if is_learning and not sub_frame:
-        if not time_step and prev_state:
-            if loss_type == 'Predictor':
-                loss = -.5 # minimum loss value
-                p_preds, p_pred_mid_idx = prev_state[-1]
-                prev_state[-1] = [start, current_gt, c_gt_mid_idx, dXdt_pred]
-                for t in range(tau):
-                    p_start, p_gt, p_gt_mid_idx, p_dXdt_pred = prev_state[t]
-                    p_pred = p_preds[t]
-                    _, n_gt, n_gt_mid_idx, _ = prev_state[t+1]
-                    p_dXdt_gt_mids = inter_mids(p_gt_mid_idx, n_gt_mid_idx)
-                    p_dXdt_gt = []
-                    for mid in p_dXdt_gt_mids:
-                        p_dXdt_gt.append(n_gt[n_gt_mid_idx[mid]] - p_gt[p_gt_mid_idx[mid]])
-                    p_dXdt_gt = np.array(p_dXdt_gt) / dt
-                    dXdt_gt_mid_idx = dict_mid_to_idx(p_dXdt_gt_mids, len(p_dXdt_gt_mids))
-                    loss_mids = inter_mids(dXdt_gt_mid_idx, p_pred_mid_idx)
-                    loss_pred = p_pred[[p_pred_mid_idx[mid] for mid in loss_mids]]
-                    loss_dXdt_pred = p_dXdt_pred[[p_pred_mid_idx[mid] for mid in loss_mids]]
-                    loss_gt = p_gt[[p_gt_mid_idx[mid] for mid in loss_mids]]
-                    loss_dXdt_gt = p_dXdt_gt[[dXdt_gt_mid_idx[mid] for mid in loss_mids]]
-                    loss = max(loss, prediction_loss(score_func, p_start, loss_pred, loss_dXdt_pred, loss_gt, loss_dXdt_gt, alpha_func, lamda, collide_dist))
-            else: # QP loss by default
-                qp_gt_loss, ref_lambda_loss = -.5, .5
-                prev_state.append([start, current_gt, c_gt_mid_idx, u_qp, u_ref, A, b])
-                for t in range(tau):
-                    p_start, p_gt, p_gt_mid_idx, p_u_qp, p_u_ref, p_A, p_b = prev_state[t]
-                    _, n_gt, n_gt_mid_idx, _, _, _, _ = prev_state[t+1]
-                    if True: #np.any(p_u_qp):
-                        p_QP_score = np.max(np.matmul(p_A, p_u_qp) - p_b)
-                        p_dXdt_gt_mids = inter_mids(p_gt_mid_idx, n_gt_mid_idx)
-                        p_dXdt_gt = []
-                        for mid in p_dXdt_gt_mids:
-                            p_dXdt_gt.append(n_gt[n_gt_mid_idx[mid]] - p_gt[p_gt_mid_idx[mid]])
-                        p_dXdt_gt = np.array(p_dXdt_gt) / dt
-                        loss_p_gt = p_gt[[p_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
-                        #loss_n_gt = n_gt[[n_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
-                        if dynamics_type == 'lin_ang__vels':
-                            p_A_gt, p_b_gt = linear_inequalities_QP_ang(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
-                        else:
-                            p_A_gt, p_b_gt = linear_inequalities_QP_vel(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep)
-                        p_CBF_gt = p_b_gt - np.matmul(p_A_gt, p_u_qp)
-                        p_start_pos = p_start[:2]
-                        for idx, mid in enumerate(p_dXdt_gt_mids):
-                            record_CBF.append((t, mid, p_CBF_gt[idx], np.linalg.norm(p_start_pos - loss_p_gt[idx]) - collide_dist, h_potential_field(p_start, loss_p_gt[idx], collide_dist, rho_0, K_rep), np.linalg.norm(h_potential_field_deriv(start, loss_p_gt[idx], collide_dist, rho_0, K_rep)), np.linalg.norm(p_u_ref), np.linalg.norm(p_u_qp)))
-                        qp_gt_loss = max(qp_gt_loss, control_loss(score_func, p_u_qp, p_A_gt, p_b_gt, p_QP_score))
-                        p_ref_lambda_loss, u_ref_is_safe, pred_is_over_conservative = conservativeness_loss(score_func, p_u_qp, p_u_ref, p_A_gt, p_b_gt, p_A, p_b)
-                        ref_lambda_loss = min(ref_lambda_loss, p_ref_lambda_loss)
-                        safe_u_ref_count += 1 if u_ref_is_safe else 0
-                        conservative_pred_count += 1 if pred_is_over_conservative else 0
-                        both_true_but_0_loss_count += 1 if u_ref_is_safe and pred_is_over_conservative else 0
-                        # and p_ref_lambda_loss == 0
-                    else:
-                        pass
-                        #qp_gt_loss = max(qp_gt_loss, 0)
-                        #ref_lambda_loss = min(ref_lambda_loss, 0)
-                loss = qp_gt_loss if ref_lambda_loss == 0 else ref_lambda_loss
-            prev_state = [prev_state[-1]]
-        else:
-            if loss_type == 'Predictor':
-                prev_state.append([start, current_gt, c_gt_mid_idx, dXdt_pred])
-                if time_step == tau - 1:
-                    prev_state.append([curr_next_preds, c_pred_mid_idx])
-            else: # QP loss by default
-                prev_state.append([start, current_gt, c_gt_mid_idx, u_qp, u_ref, A, b])
+    if is_learning and not sub_frame and not time_step and prev_state:
+        qp_gt_loss, ref_lambda_loss = -.5, .5
+        prev_state.append([start, current_gt, c_gt_mid_idx, u_qp, u_ref, A, b])
+        for t in range(tau):
+            p_start, p_gt, p_gt_mid_idx, p_u_qp, p_u_ref, p_A, p_b = prev_state[t]
+            _, n_gt, n_gt_mid_idx, _, _, _, _ = prev_state[t+1]
+            #p_QP_score = np.max(np.matmul(p_A, p_u_qp) - p_b)
+            p_dXdt_gt_mids = inter_mids(p_gt_mid_idx, n_gt_mid_idx)
+            p_dXdt_gt = []
+            for mid in p_dXdt_gt_mids:
+                p_dXdt_gt.append(n_gt[n_gt_mid_idx[mid]] - p_gt[p_gt_mid_idx[mid]])
+            p_dXdt_gt = np.array(p_dXdt_gt) / dt
+            loss_p_gt = p_gt[[p_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
+            #loss_n_gt = n_gt[[n_gt_mid_idx[mid] for mid in p_dXdt_gt_mids]]
+            if dynamics_type == 'lin_ang__vels':
+                p_A_gt, p_b_gt = linear_inequalities_QP_ang(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist)
+            else:
+                p_A_gt, p_b_gt = linear_inequalities_QP_vel(len(p_dXdt_gt), loss_p_gt, p_dXdt_gt, p_start, 0, alpha_func, collide_dist, rho_0, K_rep)
+            p_CBF_gt = p_b_gt - np.matmul(p_A_gt, p_u_qp)
+            p_start_pos = p_start[:2]
+            for idx, mid in enumerate(p_dXdt_gt_mids):
+                record_CBF.append((t, mid, p_CBF_gt[idx], np.linalg.norm(p_start_pos - loss_p_gt[idx]) - collide_dist, h_potential_field(p_start, loss_p_gt[idx], collide_dist, rho_0, K_rep), np.linalg.norm(h_potential_field_deriv(start, loss_p_gt[idx], collide_dist, rho_0, K_rep)), np.linalg.norm(p_u_ref), np.linalg.norm(p_u_qp)))
+            qp_gt_loss = max(qp_gt_loss, loss_func(score_func, p_u_qp, p_A_gt, p_b_gt, p_A, p_b))
+            if loss_type == 'gt_Gt':
+                p_ref_lambda_loss, u_ref_is_safe, pred_is_over_conservative = conservativeness_loss(score_func, p_u_qp, p_u_ref, p_A_gt, p_b_gt, p_A, p_b)
+                ref_lambda_loss = min(ref_lambda_loss, p_ref_lambda_loss)
+                safe_u_ref_count += 1 if u_ref_is_safe else 0
+                conservative_pred_count += 1 if pred_is_over_conservative else 0
+                both_true_but_0_loss_count += 1 if u_ref_is_safe and pred_is_over_conservative else 0
+                # and p_ref_lambda_loss == 0
+        loss = qp_gt_loss if loss_type == 'all_pred' or ref_lambda_loss == 0 else ref_lambda_loss
+        prev_state = [prev_state[-1]]
+    else:
+        prev_state.append([start, current_gt, c_gt_mid_idx, u_qp, u_ref, A, b])
 
 
     if dynamics_type == 'lin_ang__vels':

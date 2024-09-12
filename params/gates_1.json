@@ -14,8 +14,10 @@ gmax:
   - 1
 max_linear_vel: 4
 max_angular_vel: 0.25
-goal_rad: 3
-human_rad: 3
+goal_rad: 0.5
+human_rad: 2
+human_size: 0.5
+robot_size: 0.5
 r_start:
   - 0.05
   - 0.6

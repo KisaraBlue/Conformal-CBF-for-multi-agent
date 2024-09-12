@@ -66,19 +66,16 @@ if __name__ == "__main__":
             str_append += '_' + 'no_learning'
         else:
             # learning parameters
-            all_predictions = (sys.argv[next_arg] == '-all_predictions')
-            if all_predictions:
-                loss_type = 'Predictor'
-                next_arg += 1
-            else:
-                loss_type = 'QPcontrol'
-            lr = float(sys.argv[next_arg])
-            eps = float(sys.argv[next_arg + 1])
+            loss_type = sys.argv[next_arg]
+            lr = float(sys.argv[next_arg + 1])
+            eps = float(sys.argv[next_arg + 2])
+            next_arg += 3
             str_append += '_' + loss_type + '_' + 'lr' + str(lr).replace('.', '_') + '_' + 'e' + str(eps).replace('.', '_')
+        metrics_run = 'others/' if len(sys.argv) < next_arg + 1 else (sys.argv[next_arg] + '/')
 
         params = setup_params(params, H, W, lr, method, extra=(solve_rate, a_lin, dynamics_args, ground_truth, tau, not no_learning, eps, loss_type))
         plan_folder = './plans/' + scene + '/conformal_CBF/'
-        metrics_folder = './metrics/' + scene + '/conformal_CBF/'
+        metrics_folder = './metrics/' + scene + '/conformal_CBF/' + metrics_run
         videos_folder = './videos/' + scene + '/conformal_CBF/'
         stats_filename = os.path.join(plan_folder, 'stats_df_' + str_append + '.csv')
         extra_params = (solve_rate, a_lin, dynamics_type, K_acc, K_rep, K_att, rho0, 'gt' if ground_truth else tau, loss_type, lr, eps)
@@ -116,4 +113,4 @@ if __name__ == "__main__":
         generate_video(frames, plan_df, cmap_lut, videos_folder, video_filename, aheads=params['aheads'], params=params, truncate_video=True, frame_indexes=frames_to_read)
 
     # Generate metrics
-    make_metrics(plan_df, metrics_folder, metrics_filename, forecaster, method, float(lr), params, str_append=str_append, extra_params=extra_params)
+    make_metrics(plan_df, metrics_folder, metrics_filename, forecaster, method, 0 if lr == 'NA' else float(lr), params, str_append=str_append, extra_params=extra_params)
